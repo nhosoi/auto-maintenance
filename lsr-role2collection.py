@@ -20,6 +20,11 @@ import re
 import fnmatch
 from shutil import copytree, copy2, ignore_patterns, rmtree
 
+from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.emitter import Emitter
+from ruamel.yaml.events import *
+
 from pathlib import Path
 
 ROLE_DIRS = (
@@ -107,6 +112,7 @@ NO_README_LINK = (
 
 ALL_DIRS = ROLE_DIRS + PLUGINS + TESTS + DOCS + MOLECULE + DO_NOT_COPY
 
+# Regular exporessions for modules/module_utils
 IMPORT_RE = re.compile(
     br'(\bimport) (ansible\.module_utils\.)(\S+)(.*)$',
     flags=re.M
@@ -256,7 +262,81 @@ for role_dir in ROLE_DIRS:
     )
 
 
-def file_replace(path, find, replace, file_patterns):
+class MyEmitter(Emitter):
+    def write_indent(self):
+        # type: () -> None
+        indent = self.indent or 0
+        if (
+            not self.indention
+            or self.column > indent
+            or (self.column == indent and not self.whitespace)
+        ):
+            if bool(self.no_newline):
+                self.no_newline = False
+            else:
+                self.write_line_break()
+        ##### decrease 2 columns ######
+        indent -= 2
+        ##### decrease 2 columns ######
+        if self.column < indent:
+            self.whitespace = True
+            data = u' ' * (indent - self.column)
+            self.column = indent
+            if self.encoding:
+                data = data.encode(self.encoding)
+            self.stream.write(data)
+
+    def expect_block_sequence_item(self, first=False):
+        # type: (bool) -> None
+        if not first and isinstance(self.event, SequenceEndEvent):
+            if self.event.comment and self.event.comment[1]:
+                # final comments on a block list e.g. empty line
+                self.write_pre_comment(self.event)
+            self.indent = self.indents.pop()
+            self.state = self.states.pop()
+            self.no_newline = False
+        else:
+            if self.event.comment and self.event.comment[1]:
+                self.write_pre_comment(self.event)
+            nonl = self.no_newline if self.column == 0 else False
+            self.write_indent()
+            ind = self.sequence_dash_offset  # if  len(self.indents) > 1 else 0
+            ##### If column 0, do not add 2 whitespaces #####
+            if self.column == 0:
+                self.write_indicator(u'-', True, indention=True)
+            else:
+            ##### If column 0, do not add 2 whitespaces #####
+                self.write_indicator(u' ' * ind + u'-', True, indention=True)
+            if nonl or self.sequence_dash_offset + 2 > self.best_sequence_indent:
+                self.no_newline = True
+            self.states.append(self.expect_block_sequence_item)
+            self.expect_node(sequence=True)
+
+
+yaml = YAML()
+yaml.preserve_quotes = True
+# Adding '---' if it's not there.
+yaml.explicit_start = True
+yaml.indent(mapping=2, sequence=4, offset=2) # nealy identical except white space at column 0 and 1
+yaml.width = 4096
+yaml.Emitter = MyEmitter
+
+def yaml_recurse(d, pat, rep):
+    if isinstance(d, dict):
+        for k in d:
+            if isinstance(d[k], str):
+                d[k] = d[k].replace(pat, rep)
+            else:
+               yaml_recurse(d[k], pat, rep)
+    if isinstance(d, list):
+        for idx, elem in enumerate(d):
+            if isinstance(elem, str):
+                d[idx] = elem.replace(pat, rep)
+            else:
+               yaml_recurse(d[idx], pat, rep)
+
+
+def yaml_recurse_tree(path, pat, rep, file_patterns):
     """
     Replace a pattern `find` with `replace` in the files that match
     `file_patterns` under `path`.
@@ -266,23 +346,19 @@ def file_replace(path, find, replace, file_patterns):
             for filename in fnmatch.filter(files, file_pattern):
                 filepath = os.path.join(root, filename)
                 with open(filepath) as f:
-                    s = f.read()
-                s = re.sub(find, replace, s)
-                with open(filepath, "w") as f:
-                    f.write(s)
+                    yaml_data = yaml.load(f)
 
+                yaml_recurse(yaml_data, pat, rep)
 
-# Replace "{{ role_path }}/roles/rolename" with "rolename" in role_dir.
-find = "{{ role_path }}/roles/([\w\d]*['\"])"
-replace = "\\1"
-file_patterns = ['*.yml', '*.md']
-file_replace(role_dir, find, replace, file_patterns)
+                with open(filepath, 'w') as stream:
+                    yaml.dump(yaml_data, stream=stream)
 
-# Replace "{{ role_path }}/roles/rolename/{tasks,vars,defaults}/main.yml" with
-# "rolename/{tasks,vars,defaults}/main.yml" in role_dir.
-find = "{{ role_path }}/roles/([\w\d\./]*)$"
-replace = "\\1"
-file_replace(role_dir, find, replace, file_patterns)
+# Replace "include|import_role: {{ role_path }}/roles/rolename" with FQRN.
+#file_patterns = ['*.yml', '*.md']
+file_patterns = ['*.yml']
+pat = "{{ role_path }}/roles/"
+rep = namespace + '.' + collection + '.'
+yaml_recurse_tree(output / 'roles' / role, pat, rep, file_patterns)
 
 # ==============================================================================
 
@@ -318,31 +394,16 @@ def remove_or_reset_symlinks(path, role):
             node.rmdir()
 
 
-def recursive_grep(path, find, file_patterns):
-    """
-    Check if a pattern `find` is found in the files that match
-    `file_patterns` under `path`.
-    """
-    for root, dirs, files in os.walk(os.path.abspath(path)):
-        for file_pattern in file_patterns:
-            for filename in fnmatch.filter(files, file_pattern):
-                filepath = os.path.join(root, filename)
-                with open(filepath) as f:
-                    s = f.read()
-                if find in s:
-                    return True
-    return False
-
-
 def replace_rolename_with_collection(path, namespace, collection, role):
     """
     Replace the roles or include_role values, ROLE or `linux-system-roles.ROLE`, are replaced
     with `NAMESPACE.COLLECTION.ROLE` in the given dir `path` recursively.
     """
-    find = r"( *name: | *- name: | *- | *roletoinclude: | *role: | *- role: )(linux-system-roles\.{0}\b)".format(role, role)
-    replace = r"\1" + namespace + "." + collection + "." + role
-    file_patterns = ['*.yml', '*.md']
-    file_replace(path, find, replace, file_patterns)
+    #file_patterns = ['*.yml', '*.md']
+    file_patterns = ['*.yml']
+    pat = 'linux-system-roles.' + role
+    rep = namespace + '.' + collection + '.' + role
+    yaml_recurse_tree(path, pat, rep, file_patterns)
 
 
 def symlink_n_rolename(path, namespace, collection, role):
@@ -373,6 +434,7 @@ def add_to_tests_defaults(namespace, collection, role):
             f.write(s)
 
 copy_tests(src_path, role)
+
 # remove symlinks in the tests/role, then updating the rolename to the collection format
 symlink_n_rolename(output / 'tests' / role, namespace, collection, role)
 add_to_tests_defaults(namespace, collection, role)
@@ -437,8 +499,7 @@ for doc in DOCS:
 
 # Remove symlinks in the docs/role (e.g., in the examples).
 # Update the rolename to the collection format as done in the tests.
-docs_role_path = output / 'docs' / role
-symlink_n_rolename(docs_role_path, namespace, collection, role)
+symlink_n_rolename(output / 'docs' / role, namespace, collection, role)
 
 # ==============================================================================
 
@@ -681,11 +742,26 @@ def add_rolename(filename, rolename):
     A file with no extension, e.g., LICENSE is to LICENSE-rolename
     """
     if filename.find('.', 1) > 0:
-        with_rolename = re.sub('(\.[A-Za-z0-1]*$)', '-' + rolename + r'\1', filename)
+        with_rolename = re.sub('(\.[\w\d]*$)', '-' + rolename + r'\1', filename)
     else:
         with_rolename = filename + "-" + rolename
     return with_rolename
 
+
+def file_replace(path, find, replace, file_patterns):
+    """
+    Replace a pattern `find` with `replace` in the files that match
+    `file_patterns` under `path`.
+    """
+    for root, dirs, files in os.walk(os.path.abspath(path)):
+        for file_pattern in file_patterns:
+            for filename in fnmatch.filter(files, file_pattern):
+                filepath = os.path.join(root, filename)
+                with open(filepath) as f:
+                    s = f.read()
+                s = re.sub(find, replace, s)
+                with open(filepath, "w") as f:
+                    f.write(s)
 
 # Extra files and directories including the sub-roles
 for extra in extras:
