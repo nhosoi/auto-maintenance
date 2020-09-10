@@ -1,15 +1,17 @@
 #!/usr/bin/env python
 
-import os
-import sys
 import logging
+import os
 import re
+import shutil
+import sys
 from pathlib import Path
+from ruamel.yaml import YAML
 
 from ansible.errors import AnsibleParserError
 from ansible.parsing.dataloader import DataLoader
 from ansible.parsing.mod_args import ModuleArgsParser
-from ansible.parsing.yaml.objects import AnsibleSequence, AnsibleMapping
+from ansible.parsing.yaml.objects import AnsibleMapping, AnsibleSequence
 
 if os.environ.get("LSR_DEBUG") == "true":
     logging.getLogger().setLevel(logging.DEBUG)
@@ -29,14 +31,20 @@ PLAY_KEYS = {
     "tasks",
 }
 
+TASK_LIST_KWS = ["always", "block", "handlers", "post_tasks", "pre_tasks", "rescue", "tasks"]
 
-def is_role_dir(role_path, dirpath):
+class LSRException(Exception):
+    pass
+
+def get_role_dir(role_path, dirpath):
     if role_path == dirpath:
-        return False
+        return None, None
     dir_pth = Path(dirpath)
     relpath = dir_pth.relative_to(role_path)
     base_dir = relpath.parts[0]
-    return base_dir in ROLE_DIRS
+    if base_dir in ROLE_DIRS:
+        return base_dir, relpath
+    return None, None
 
 def get_file_type(item):
     if isinstance(item, AnsibleMapping):
@@ -46,7 +54,7 @@ def get_file_type(item):
     elif isinstance(item, AnsibleSequence):
         return "tasks"
     else:
-        raise Exception(f"Error: unknown type of file: {item}")
+        raise LSRException(f"Error: unknown type of file: {item}")
 
 
 def get_item_type(item):
@@ -58,102 +66,170 @@ def get_item_type(item):
             return "block"
         return "task"
     else:
-        raise Exception(f"Error: unknown type of item: {item}")
+        raise LSRException(f"Error: unknown type of item: {item}")
 
-def handle_other(item, filepath, parsed_results):
-    """handle properties of Ansible item other than vars and tasks"""
-    for role in item.get("roles", []):
-        print(f"\troles item role {role} - {filepath}")
-    return
+class LSRFileTransformerBase(object):
 
-def handle_vars(item, filepath, parsed_results):
-    """handle vars of Ansible item"""
-    for var in item.get("vars", []):
-        logging.debug(f"\tvar = {var}")
-    return
+    # we used to try to not deindent comment lines in the Ansible yaml,
+    # but this changed the indentation when comments were used in
+    # literal strings, which caused test failures - so for now, we
+    # have to live with poorly indented Ansible comments . . .
+    #INDENT_RE = re.compile(r'^  (?! *#)', flags=re.MULTILINE)
+    INDENT_RE = re.compile(r'^  ', flags=re.MULTILINE)
+    HEADER_RE = re.compile(r'^(---\n|.*\n---\n)', flags=re.DOTALL)
+    FOOTER_RE = re.compile(r'\n([.][.][.]|[.][.][.]\n.*)$', flags=re.DOTALL)
 
-def handle_meta(item, filepath, parsed_results):
-    """handle meta/main.yml file"""
-    for role in item.get("dependencies", []):
-        print(f"\tmeta dependencies role {role} - {filepath}")
-
-def handle_task(task, role_modules, filepath, parsed_results):
-    """handle a single task"""
-    mod_arg_parser = ModuleArgsParser(task)
-    try:
-        action, _, _ = mod_arg_parser.parse(skip_action_validation=True)
-    except AnsibleParserError as e:
-        raise SystemExit("Couldn't parse task at %s (%s)\n%s" % (task, e.message, task))
-    if action == "include_role" or action == "import_role":
-        print(f"\ttask role {task[action]['name']} - {filepath}")
-        parsed_results.append({'filepath': filepath, 'task_role': task[action]['name']})
-    elif action in role_modules:
-        print(f"\ttask role module {action} - {filepath}")
-    handle_tasks(task, role_modules, filepath, parsed_results)
-
-def handle_task_list(tasks, role_modules, filepath, parsed_results):
-    """item is a list of Ansible Task objects"""
-    for task in tasks:
-        if "block" in task:
-            handle_tasks(task, role_modules, filepath, parsed_results)
+    def __init__(self, filepath, rolename):
+        self.filepath = filepath
+        dl = DataLoader()
+        self.ans_data = dl.load_from_file(filepath)
+        if self.ans_data is None:
+            raise LSRException(f"file is empty {filepath}")
+        self.file_type = get_file_type(self.ans_data)
+        self.rolename = rolename
+        buf = open(filepath).read()
+        self.ruamel_yaml = YAML(typ='rt')
+        match = re.search(LSRFileTransformerBase.HEADER_RE, buf)
+        if match:
+            self.header = match.group(1)
         else:
-            handle_task(task, role_modules, filepath, parsed_results)
+            self.header = ''
+        match = re.search(LSRFileTransformerBase.FOOTER_RE, buf)
+        if match:
+            self.footer = match.group(1)
+        else:
+            self.footer = ''
+        self.ruamel_yaml.default_flow_style = False
+        self.ruamel_yaml.preserve_quotes = True
+        self.ruamel_yaml.width = None
+        self.ruamel_data = self.ruamel_yaml.load(buf)
+        self.ruamel_yaml.indent(mapping=2, sequence=4, offset=2)
+        self.outputfile = None
+        self.outputstream = sys.stdout
 
-def handle_tasks(item, role_modules, filepath, parsed_results):
-    """item has one or more fields which hold a list of Task objects"""
-    if "always" in item:
-        handle_task_list(item["always"], role_modules, filepath, parsed_results)
-    if "block" in item:
-        handle_task_list(item["block"], role_modules, filepath, parsed_results)
-    if "handlers" in item:
-        handle_task_list(item["post_tasks"], role_modules, filepath, parsed_results)
-    if "pre_tasks" in item:
-        handle_task_list(item["pre_tasks"], role_modules, filepath, parsed_results)
-    if "post_tasks" in item:
-        handle_task_list(item["post_tasks"], role_modules, filepath, parsed_results)
-    if "rescue" in item:
-        handle_task_list(item["rescue"], role_modules, filepath, parsed_results)
-    if "tasks" in item:
-        handle_task_list(item["tasks"], role_modules, filepath, parsed_results)
+    def run(self):
+        if self.file_type == "vars":
+            self.handle_vars(self.ans_data, self.ruamel_data)
+        elif self.file_type == "meta":
+            self.handle_meta(self.ans_data, self.ruamel_data)
+        else:
+            for a_item, ru_item in zip(self.ans_data, self.ruamel_data):
+                self.handle_item(a_item, ru_item)
 
-def parse_role(role_path, rel_path, parsed_results):
+    def write(self):
+        def xform(thing):
+            logging.debug(f"xform thing {thing}")
+            if self.file_type == "tasks":
+                thing = re.sub(LSRFileTransformerBase.INDENT_RE, '', thing)
+            thing = self.header + thing
+            if not thing.endswith("\n"):
+                thing = thing + "\n"
+            thing = thing + self.footer
+            return thing
+        if self.outputfile:
+            outstrm = open(self.outputfile, "w")
+        else:
+            outstrm = self.outputstream
+        self.ruamel_yaml.dump(self.ruamel_data, outstrm, transform=xform)
+
+    def task_cb(self, a_task, ru_task, module_name, module_args, delegate_to):
+        """subclass will override"""
+        pass
+
+    def other_cb(self, a_item, ru_item):
+        """subclass will override"""
+        pass
+
+    def vars_cb(self, a_item, ru_item):
+        """subclass will override"""
+        pass
+
+    def meta_cb(self, a_item, ru_item):
+        """subclass will override"""
+        pass
+
+    def handle_item(self, a_item, ru_item):
+        """handle any type of item - call the appropriate handlers"""
+        ans_type = get_item_type(a_item)
+        self.handle_vars(a_item, ru_item)
+        self.handle_other(a_item, ru_item)
+        if ans_type == "task":
+            self.handle_task(a_item, ru_item)
+        self.handle_task_list(a_item, ru_item)
+
+    def handle_other(self, a_item, ru_item):
+        """handle properties of Ansible item other than vars and tasks"""
+        self.other_cb(a_item, ru_item)
+
+    def handle_vars(self, a_item, ru_item):
+        """handle vars of Ansible item"""
+        self.vars_cb(a_item, ru_item)
+
+    def handle_meta(self, a_item, ru_item):
+        """handle meta/main.yml file"""
+        self.meta_cb(a_item, ru_item)
+
+    def handle_task(self, a_task, ru_task):
+        """handle a single task"""
+        mod_arg_parser = ModuleArgsParser(a_task)
+        try:
+            action, args, delegate_to = mod_arg_parser.parse(skip_action_validation=True)
+        except AnsibleParserError as e:
+            raise LSRException("Couldn't parse task at %s (%s)\n%s" % (a_task.ansible_pos, e.message, a_task))
+        self.task_cb(a_task, ru_task, action, args, delegate_to)
+
+    def handle_task_list(self, a_item, ru_item):
+        """item has one or more fields which hold a list of Task objects"""
+        for kw in TASK_LIST_KWS:
+            if kw in a_item:
+                for a_task, ru_task in zip(a_item[kw], ru_item[kw]):
+                    self.handle_item(a_task, ru_task)
+
+def get_role_modules(role_path):
+    """get the modules from the role
+       returns a set() of module names"""
     role_modules = set()
     library_path = Path(os.path.join(role_path, "library"))
     if library_path.is_dir():
         for mod_file in library_path.iterdir():
             if mod_file.is_file() and mod_file.stem != "__init__":
                 role_modules.add(mod_file.stem)
-    top_dir = Path(os.path.join(role_path, rel_path))
-    for (dirpath, _, filenames) in os.walk(top_dir):
-        if not is_role_dir(role_path, dirpath):
-            continue
-        for filename in filenames:
-            if not filename.endswith(".yml"):
-                continue
-            filepath = os.path.join(dirpath, filename)
-            #print(f"filepath {filepath}")
-            dl = DataLoader()
-            ans_data = dl.load_from_file(filepath)
-            if ans_data is None:
-                print(f"file is empty {filepath}")
-                continue
-            file_type = get_file_type(ans_data)
-            if file_type == "vars":
-                handle_vars(ans_data, filepath, parsed_results)
-                continue
-            if file_type == "meta":
-                handle_meta(ans_data, filepath, parsed_results)
-                continue
-            for item in ans_data:
-                ans_type = get_item_type(item)
-                handle_vars(item, filepath, parsed_results)
-                handle_other(item, filepath, parsed_results)
-                if ans_type == "task":
-                    handle_task(item, role_modules, filepath, parsed_results)
-                handle_tasks(item, role_modules, filepath, parsed_results)
-    return parsed_results
+    return role_modules
 
-#role_path = sys.argv[1]
-#rel_path = sys.argv[2]
-#parsed_results = []
-#parse_role(role_path, rel_path, parsed_results)
+class LSRTransformer(object):
+    """Transform all of the .yml files in a role or role subdir"""
+
+    def __init__(self, role_path, is_role_dir=True, role_name=None, file_xfrm_cls=LSRFileTransformerBase):
+        """Create a role transformer.  The user can specify the specific class
+        to use for transforming each file, and the extra arguments to pass to the
+        constructor of that class
+        is_role_dir - if True, role_path is the role directory (with all of the usual role subdirs)
+                      if False, just operate on the .yml files found in role_path"""
+        self.role_name = role_name
+        self.role_path = role_path
+        self.is_role_dir = is_role_dir
+        self.file_xfrm_cls = file_xfrm_cls
+        if self.is_role_dir and not self.role_name:
+            self.role_name = os.path.basename(self.role_path)
+
+    def run(self):
+        for (dirpath, _, filenames) in os.walk(self.role_path):
+            if self.is_role_dir:
+                role_dir, _ = get_role_dir(self.role_path, dirpath)
+                if not role_dir:
+                    continue
+            for filename in filenames:
+                if not filename.endswith(".yml"):
+                    continue
+                filepath = os.path.join(dirpath, filename)
+                logging.debug(f"filepath {filepath}")
+                try:
+                    lsrft = self.file_xfrm_cls(filepath, self.role_name)
+                    lsrft.run()
+                    lsrft.write()
+                except LSRException as lsrex:
+                    logging.debug(f"Could not transform {filepath}: {lsrex}")
+
+if __name__ == "__main__":
+    for role_path in sys.argv[1:]:
+        parse_role(role_path)

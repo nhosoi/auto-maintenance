@@ -15,11 +15,14 @@
 #                        [-h]
 
 import argparse
+import errno
+import logging
 import os
 import re
 import fnmatch
+import sys
 from shutil import copytree, copy2, ignore_patterns, rmtree
-import ansible_role_parser
+from ansible_role_parser import LSRFileTransformerBase, LSRTransformer, get_role_dir, get_role_modules
 
 from pathlib import Path
 
@@ -121,6 +124,77 @@ FROM2DOTS_RE = re.compile(
     flags=re.M
 )
 
+if os.environ.get("LSR_DEBUG") == "true":
+    logging.getLogger().setLevel(logging.DEBUG)
+else:
+    logging.getLogger().setLevel(logging.ERROR)
+
+
+class LSRFileTransformer(LSRFileTransformerBase):
+    """Do the role file transforms - fix role names, add FQCN
+    to module names, etc."""
+
+    def task_cb(self, a_task, ru_task, module_name, module_args, delegate_to):
+        """do something with a task item"""
+        if module_name == "include_role" or module_name == "import_role":
+            rolename = ru_task[module_name]["name"]
+            lsr_rolename = "linux-system-roles." + self.rolename
+            logging.debug(f"\ttask role {rolename}")
+            if rolename == self.rolename or rolename == lsr_rolename:
+                ru_task[module_name]["name"] = prefix + self.rolename
+            elif rolename.startswith("{{ role_path }}"):
+                find = r'{{ role_path }}/roles/([\w\d]+)'
+                replace = prefix + r'\1'
+                rolename = re.sub(find, replace, rolename)
+                ru_task[module_name]["name"] = rolename
+        elif module_name in role_modules:
+            logging.debug(f"\ttask role module {module_name}")
+            # assumes ru_task is an orderreddict
+            idx = tuple(ru_task).index(module_name)
+            val = ru_task.pop(module_name)
+            ru_task.insert(idx, prefix + module_name, val)
+
+    def other_cb(self, a_item, ru_item):
+        """do something with the other non-task information in an item
+        this is where you will get e.g. the `roles` keyword from a play"""
+        self.change_roles(ru_item, "roles")
+
+    def vars_cb(self, a_item, ru_item):
+        """handle vars of Ansible item, or vars from a vars file"""
+        for var in a_item.get("vars", []):
+            logging.debug(f"\tvar = {var}")
+        return
+
+    def meta_cb(self, a_item, ru_item):
+        """hand a meta/main.yml style file"""
+        self.change_roles(ru_item, "dependencies")
+
+    def change_roles(self, ru_item, roles_kw):
+        """ru_item is an item which may contain a roles or dependencies
+        specifier - the roles_kw is either "roles" or "dependencies"
+        """
+        lsr_rolename = "linux-system-roles." + self.rolename
+        for idx, role in enumerate(ru_item.get(roles_kw, [])):
+            changed = False
+            if isinstance(role, dict):
+                if "name" in role:
+                    key = "name"
+                else:
+                    key = "role"
+                if role[key] == self.rolename or role[key] == lsr_rolename:
+                    role[key] = prefix + self.rolename
+                    changed = True
+            elif role == self.rolename or role == lsr_rolename:
+                role = prefix + self.rolename
+                changed = True
+            if changed:
+                ru_item[roles_kw][idx] = role
+
+    def write(self):
+        """assume we are operating on files already copied to the dest dir,
+        so write file in-place"""
+        self.outputfile = self.filepath
+        super().write()
 
 def dir_to_plugin(v):
     if v[-8:] == '_plugins':
@@ -128,7 +202,6 @@ def dir_to_plugin(v):
     elif v == 'library':
         return 'modules'
     return v
-
 
 # python lsr-role2collection.py /src_path/linux-system-roles/logging /dest_path/ansible_collections/fedora/system_roles
 # positional arguments:
@@ -192,7 +265,7 @@ if args.molecule:
     src_path = args.src_path.resolve() / 'template'
     if not src_path.exists():
         print(f'Error: {src_path} does not exists.')
-        os._exit(errno.NOENT)
+        os._exit(errno.ENOENT)
     for mol in MOLECULE:
         src = src_path / mol
         dest = output / mol
@@ -230,25 +303,6 @@ if args.molecule:
 
 # ==============================================================================
 
-def add_dest(src, dest, parsed_results):
-    for res in parsed_results:
-        res['destpath'] = res['filepath'].replace(src, dest)
-
-
-def replace_based_on_parsed_results(parsed_results, prefix, role):
-    for res in parsed_results:
-        with open(res['destpath']) as f:
-            s = f.read()
-        if '{{ role_path }}' in res['task_role']:
-            find = "{{ role_path }}/roles/([\w\d]*['\"])"
-            replace = prefix + "\\1"
-        elif 'linux-system-roles' in res['task_role']:
-            find = res['task_role']
-            replace = prefix + role
-        s = re.sub(find, replace, s)
-        with open(res['destpath'], "w") as f:
-            f.write(s)
-
 
 def copy_tree_with_replace(src_path, prefix, role, TUPLE, isrole=True, ignoreme=None, symlinks=True):
     """
@@ -259,14 +313,13 @@ def copy_tree_with_replace(src_path, prefix, role, TUPLE, isrole=True, ignoreme=
     2. Parse the source tree to look for task_roles
     3. Replace the task_roles with FQCN
     """
-    parsed_results = []
-    for dir in TUPLE:
-        src = src_path / dir
+    for dirname in TUPLE:
+        src = src_path / dirname
         if src.is_dir():
             if isrole:
-                dest = output / 'roles' / role / dir
+                dest = output / 'roles' / role / dirname
             else:
-                dest = output / dir / role
+                dest = output / dirname / role
             print(f'Copying role {src} to {dest}')
             if ignoreme:
                 copytree(
@@ -283,9 +336,8 @@ def copy_tree_with_replace(src_path, prefix, role, TUPLE, isrole=True, ignoreme=
                     symlinks=symlinks,
                     dirs_exist_ok=True
                 )
-            ansible_role_parser.parse_role(str(src_path), dir, parsed_results)
-            add_dest(str(src_path / dir), str(dest), parsed_results)
-    replace_based_on_parsed_results(parsed_results, prefix, role)
+            lsrxfrm = LSRTransformer(dest, False, role, LSRFileTransformer)
+            lsrxfrm.run()
 
 
 def file_replace(path, find, replace, file_patterns):
@@ -308,13 +360,16 @@ def file_replace(path, find, replace, file_patterns):
 src_path = args.src_path.resolve() / role
 if not src_path.exists():
     print(f'Error: {src_path} does not exists.')
-    sys.exit(errno.NOENT)
+    sys.exit(errno.ENOENT)
 _extras = set(os.listdir(src_path)).difference(ALL_DIRS)
 try:
     _extras.remove('.git')
 except KeyError:
     pass
 extras = [src_path / e for e in _extras]
+
+# get role modules - will need to find and convert these to use FQCN
+role_modules = get_role_modules(src_path)
 
 # Role - copy subdirectories, tasks, defaults, vars, etc., in the system role to
 # DEST_PATH/ansible_collections/NAMESPACE/COLLECTION/roles/ROLE.
@@ -424,6 +479,9 @@ for doc in DOCS:
             ignore=ignore_patterns('roles'),
             dirs_exist_ok=True
         )
+        if doc == "examples":
+            lsrxfrm = LSRTransformer(dest, False, role, LSRFileTransformer)
+            lsrxfrm.run()
     elif src.is_file():
         process_readme(src_path, doc, role)
 
