@@ -139,10 +139,10 @@ class LSRFileTransformer(object):
                 key = "name"
             else:
                 key = "role"
-            if role[key] == self.rolename:
-                role[key] = "linux-system-roles." + role[key]
-        elif role == self.rolename:
-            role = "linux-system-roles." + role
+            if role[key] == self.rolename or role[key] == "linux-system-roles." + self.rolename:
+                role[key] = "fedora.system_roles." + self.rolename
+        elif role == self.rolename or role == "linux-system-roles." + self.rolename:
+            role = "fedora.system_roles." + self.rolename
         return role
 
     def handle_other(self, a_item, ru_item):
@@ -173,8 +173,8 @@ class LSRFileTransformer(object):
             raise LSRException("Couldn't parse task at %s (%s)\n%s" % (a_task.ansible_pos, e.message, a_task))
         if action == "include_role" or action == "import_role":
             logging.debug(f"\ttask role {a_task[action]['name']}")
-            if ru_task[action]["name"] == self.rolename:
-                ru_task[action]["name"] = "linux-system-roles." + ru_task[action]["name"]
+            if ru_task[action]["name"] == self.rolename or ru_task[action]["name"] == "linux-system-roles." + self.rolename:
+                ru_task[action]["name"] = "fedora.system_roles." + self.rolename
         elif action in self.role_modules:
             logging.debug(f"\ttask role module {action}")
             # assumes ru_task is an orderreddict
