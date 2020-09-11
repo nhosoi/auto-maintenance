@@ -115,7 +115,7 @@ EXTRA_NO_ROLENAME = (
 
 # Do not add a link in this tuple to the main README.md.
 NO_README_LINK = (
-    'rsyslog',
+    '__rsyslog',
 )
 
 ALL_DIRS = ROLE_DIRS + PLUGINS + TESTS + DOCS + MOLECULE + DO_NOT_COPY
@@ -152,10 +152,8 @@ class LSRFileTransformer(LSRFileTransformerBase):
             if rolename == self.rolename or rolename == lsr_rolename:
                 ru_task[module_name]["name"] = prefix + self.rolename
             elif rolename.startswith("{{ role_path }}"):
-                find = r'{{ role_path }}/roles/([\w\d]+)'
-                replace = prefix + r'\1'
-                rolename = re.sub(find, replace, rolename)
-                ru_task[module_name]["name"] = rolename
+                match = re.match(r'{{ role_path }}/roles/([\w\d\.]+)', rolename)
+                ru_task[module_name]["name"] = prefix + "__" + match.group(1).replace('.', replace_dot)
         elif module_name in role_modules:
             logging.debug(f"\ttask role module {module_name}")
             # assumes ru_task is an orderreddict
@@ -178,6 +176,17 @@ class LSRFileTransformer(LSRFileTransformerBase):
         """hand a meta/main.yml style file"""
         self.change_roles(ru_item, "dependencies")
 
+    def comp_rolenames(self, name0, name1):
+        if name0 == name1:
+            return True
+        else:
+            core0 = re.sub('[_\.]', '', name0)
+            core1 = re.sub('[_\.]', '', name1)
+            if core0 == core1:
+                return True
+            else:
+                return False
+
     def change_roles(self, ru_item, roles_kw):
         """ru_item is an item which may contain a roles or dependencies
         specifier - the roles_kw is either "roles" or "dependencies"
@@ -190,10 +199,10 @@ class LSRFileTransformer(LSRFileTransformerBase):
                     key = "name"
                 else:
                     key = "role"
-                if role[key] == self.rolename or role[key] == lsr_rolename:
+                if role[key] == lsr_rolename or self.comp_rolenames(role[key], self.rolename):
                     role[key] = prefix + self.rolename
                     changed = True
-            elif role == self.rolename or role == lsr_rolename:
+            elif role == lsr_rolename or self.comp_rolenames(role, self.rolename):
                 role = prefix + self.rolename
                 changed = True
             if changed:
@@ -282,6 +291,7 @@ role = args.role
 dest_path = args.dest_path.resolve()
 output = Path.joinpath(dest_path, "ansible_collections/" + namespace + "/" + collection)
 output.mkdir(parents=True, exist_ok=True)
+replace_dot = args.replace_dot
 
 # Copy molecule related files and directories from linux-system-roles/template.
 if args.molecule:
@@ -431,7 +441,7 @@ add_to_tests_defaults(namespace, collection, role)
 # DEST_PATH/ansible_collections/NAMESPACE/COLLECTION/docs/ROLE.
 # Copy README.md to DEST_PATH/ansible_collections/NAMESPACE/COLLECTION/roles/ROLE.
 # Generate a top level README.md which contains links to roles/ROLE/README.md.
-def process_readme(src_path, filename, rolename):
+def process_readme(src_path, filename, rolename, original=None):
     """
     Copy src_path/filename to output/docs/rolename.
     filename could be README.md, README-something.md, or something.md.
@@ -450,6 +460,8 @@ def process_readme(src_path, filename, rolename):
     dest = output / 'roles' / rolename
     file_patterns = ['*.md']
     file_replace(dest, 'linux-system-roles.' + rolename, prefix + rolename, file_patterns)
+    if original:
+        file_replace(dest, original, prefix + rolename, file_patterns)
     if not rolename in NO_README_LINK and filename.startswith('README'):
         if filename == 'README.md':
             title = rolename
@@ -755,8 +767,9 @@ for extra in extras:
         # handled in the same way as the parent role's are.
         if extra.name == 'roles':
             for sr in extra.iterdir():
-                # If a role name contains '.', replace it with args.replace_dot
-                dr = sr.name.replace('.', args.replace_dot)
+                # If a role name contains '.', replace it with replace_dot
+                # convert nested subroles to prefix name with __
+                dr = "__" + sr.name.replace('.', replace_dot)
                 copy_tree_with_replace(sr, prefix, dr, ROLE_DIRS)
                 # copy tests dir to output/'tests'
                 copy_tree_with_replace(sr, prefix, dr, TESTS, isrole=False, ignoreme='artifacts')
@@ -766,14 +779,14 @@ for extra in extras:
                 # copy README.md to output/roles/sr.name
                 readme = sr / 'README.md'
                 if readme.is_file():
-                    process_readme(sr, 'README.md', dr)
+                    process_readme(sr, 'README.md', dr, original=sr.name)
                 if sr.name != dr:
                     # replace "sr.name" with "dr" in role_dir
                     dirs = ['roles', 'docs', 'tests']
                     for dir in dirs:
                         role_dir = output / dir
                         file_patterns = ['*.yml', '*.md']
-                        file_replace(role_dir, re.escape(sr.name), dr, file_patterns)
+                        file_replace(role_dir, re.escape('\b' + sr.name + '\b'), dr, file_patterns)
         # Other extra directories are copied to the collection dir as they are.
         else:
             dest = output / extra.name
