@@ -3,7 +3,6 @@
 import logging
 import os
 import re
-import shutil
 import sys
 from pathlib import Path
 from ruamel.yaml import YAML
@@ -17,8 +16,19 @@ if os.environ.get("LSR_DEBUG") == "true":
     logging.getLogger().setLevel(logging.DEBUG)
 
 
-ROLE_DIRS = ["defaults", "examples", "files", "handlers", "library", "meta",
-    "module_utils", "tasks", "templates", "tests", "vars"]
+ROLE_DIRS = [
+    "defaults",
+    "examples",
+    "files",
+    "handlers",
+    "library",
+    "meta",
+    "module_utils",
+    "tasks",
+    "templates",
+    "tests",
+    "vars",
+]
 
 PLAY_KEYS = {
     "gather_facts",
@@ -27,14 +37,23 @@ PLAY_KEYS = {
     "import_playbook",
     "post_tasks",
     "pre_tasks",
-    "roles"
-    "tasks",
+    "roles" "tasks",
 }
 
-TASK_LIST_KWS = ["always", "block", "handlers", "post_tasks", "pre_tasks", "rescue", "tasks"]
+TASK_LIST_KWS = [
+    "always",
+    "block",
+    "handlers",
+    "post_tasks",
+    "pre_tasks",
+    "rescue",
+    "tasks",
+]
+
 
 class LSRException(Exception):
     pass
+
 
 def get_role_dir(role_path, dirpath):
     if role_path == dirpath:
@@ -45,6 +64,7 @@ def get_role_dir(role_path, dirpath):
     if base_dir in ROLE_DIRS:
         return base_dir, relpath
     return None, None
+
 
 def get_file_type(item):
     if isinstance(item, AnsibleMapping):
@@ -68,16 +88,17 @@ def get_item_type(item):
     else:
         raise LSRException(f"Error: unknown type of item: {item}")
 
+
 class LSRFileTransformerBase(object):
 
     # we used to try to not deindent comment lines in the Ansible yaml,
     # but this changed the indentation when comments were used in
     # literal strings, which caused test failures - so for now, we
     # have to live with poorly indented Ansible comments . . .
-    #INDENT_RE = re.compile(r'^  (?! *#)', flags=re.MULTILINE)
-    INDENT_RE = re.compile(r'^  ', flags=re.MULTILINE)
-    HEADER_RE = re.compile(r'^(---\n|.*\n---\n)', flags=re.DOTALL)
-    FOOTER_RE = re.compile(r'\n([.][.][.]|[.][.][.]\n.*)$', flags=re.DOTALL)
+    # INDENT_RE = re.compile(r'^  (?! *#)', flags=re.MULTILINE)
+    INDENT_RE = re.compile(r"^  ", flags=re.MULTILINE)
+    HEADER_RE = re.compile(r"^(---\n|.*\n---\n)", flags=re.DOTALL)
+    FOOTER_RE = re.compile(r"\n([.][.][.]|[.][.][.]\n.*)$", flags=re.DOTALL)
 
     def __init__(self, filepath, rolename):
         self.filepath = filepath
@@ -88,17 +109,17 @@ class LSRFileTransformerBase(object):
         self.file_type = get_file_type(self.ans_data)
         self.rolename = rolename
         buf = open(filepath).read()
-        self.ruamel_yaml = YAML(typ='rt')
+        self.ruamel_yaml = YAML(typ="rt")
         match = re.search(LSRFileTransformerBase.HEADER_RE, buf)
         if match:
             self.header = match.group(1)
         else:
-            self.header = ''
+            self.header = ""
         match = re.search(LSRFileTransformerBase.FOOTER_RE, buf)
         if match:
             self.footer = match.group(1)
         else:
-            self.footer = ''
+            self.footer = ""
         self.ruamel_yaml.default_flow_style = False
         self.ruamel_yaml.preserve_quotes = True
         self.ruamel_yaml.width = None
@@ -120,12 +141,13 @@ class LSRFileTransformerBase(object):
         def xform(thing):
             logging.debug(f"xform thing {thing}")
             if self.file_type == "tasks":
-                thing = re.sub(LSRFileTransformerBase.INDENT_RE, '', thing)
+                thing = re.sub(LSRFileTransformerBase.INDENT_RE, "", thing)
             thing = self.header + thing
             if not thing.endswith("\n"):
                 thing = thing + "\n"
             thing = thing + self.footer
             return thing
+
         if self.outputfile:
             outstrm = open(self.outputfile, "w")
         else:
@@ -173,9 +195,14 @@ class LSRFileTransformerBase(object):
         """handle a single task"""
         mod_arg_parser = ModuleArgsParser(a_task)
         try:
-            action, args, delegate_to = mod_arg_parser.parse(skip_action_validation=True)
+            action, args, delegate_to = mod_arg_parser.parse(
+                skip_action_validation=True
+            )
         except AnsibleParserError as e:
-            raise LSRException("Couldn't parse task at %s (%s)\n%s" % (a_task.ansible_pos, e.message, a_task))
+            raise LSRException(
+                "Couldn't parse task at %s (%s)\n%s"
+                % (a_task.ansible_pos, e.message, a_task)
+            )
         self.task_cb(a_task, ru_task, action, args, delegate_to)
 
     def handle_task_list(self, a_item, ru_item):
@@ -185,9 +212,10 @@ class LSRFileTransformerBase(object):
                 for a_task, ru_task in zip(a_item[kw], ru_item[kw]):
                     self.handle_item(a_task, ru_task)
 
+
 def get_role_modules(role_path):
     """get the modules from the role
-       returns a set() of module names"""
+    returns a set() of module names"""
     role_modules = set()
     library_path = Path(os.path.join(role_path, "library"))
     if library_path.is_dir():
@@ -196,10 +224,17 @@ def get_role_modules(role_path):
                 role_modules.add(mod_file.stem)
     return role_modules
 
+
 class LSRTransformer(object):
     """Transform all of the .yml files in a role or role subdir"""
 
-    def __init__(self, role_path, is_role_dir=True, role_name=None, file_xfrm_cls=LSRFileTransformerBase):
+    def __init__(
+        self,
+        role_path,
+        is_role_dir=True,
+        role_name=None,
+        file_xfrm_cls=LSRFileTransformerBase,
+    ):
         """Create a role transformer.  The user can specify the specific class
         to use for transforming each file, and the extra arguments to pass to the
         constructor of that class
@@ -230,6 +265,8 @@ class LSRTransformer(object):
                 except LSRException as lsrex:
                     logging.debug(f"Could not transform {filepath}: {lsrex}")
 
+
 if __name__ == "__main__":
     for role_path in sys.argv[1:]:
-        parse_role(role_path)
+        lsrxfrm = LSRTransformer(role_path)
+        lsrxfrm.run()
