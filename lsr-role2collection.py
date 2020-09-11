@@ -426,7 +426,7 @@ def add_to_tests_defaults(namespace, collection, role):
               hosts: all
               roles:
                 - {0}.{1}.{2}
-        """
+            """
         ).format(namespace, collection, role)
         with open(tests_default, "w") as f:
             f.write(s)
@@ -483,7 +483,7 @@ def process_readme(src_path, filename, rolename, original=None):
 
                 ## Supported Linux System Roles
                 <!--ts-->
-                * [{2}](roles/{3})
+                  * [{2}](roles/{3})
                 <!--te-->
                 """
             ).format(namespace, collection, title, rolename + "/" + filename)
