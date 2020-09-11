@@ -5,14 +5,23 @@
 #     (see https://www.gnu.org/licenses/gpl-3.0.txt)
 
 # Usage:
-# lsr-role2collection.py [--namespace NAMESPACE]
-#                        [--collection COLLECTION]
-#                        --src-path SRC_PATH
-#                        --dest-path DEST_PATH
-#                        --role ROLE | --molecule
-#                        (if --molecule is set, SRC_PATH/template is expected)
+# lsr-role2collection.py [--namespace COLLECTION_NAMESPACE]
+#                        [--collection COLLECTION_NAME]
+#                        --src-path COLLECTION_SRC_PATH
+#                        --dest-path COLLECTION_DEST_PATH
+#                        --role ROLE_NAME | --molecule
+#                        (if --molecule is set, COLLECTION_SRC_PATH/template is expected)
 #                        [--replace-dot STR]
 #                        [-h]
+# Or
+#
+# COLLECTION_SRC_PATH=/path/to/linux-system-roles \
+# COLLECTION_DEST_PATH=/path/to/collections \
+# COLLECTION_NAMESPACE=mynamespace \
+# COLLECTION_NAME=myname \
+# lsr-role2collection.py --role ROLE_NAME
+#   ROLE_NAME role must exist in COLLECTION_SRC_PATH
+#   Converted collections are placed in COLLECTION_DEST_PATH/ansible_collections/COLLECTION_NAMESPACE/COLLECTION_NAME
 
 import argparse
 import errno
@@ -196,6 +205,7 @@ class LSRFileTransformer(LSRFileTransformerBase):
         self.outputfile = self.filepath
         super().write()
 
+
 def dir_to_plugin(v):
     if v[-8:] == '_plugins':
         return v[:-8]
@@ -203,10 +213,23 @@ def dir_to_plugin(v):
         return 'modules'
     return v
 
-# python lsr-role2collection.py /src_path/linux-system-roles/logging /dest_path/ansible_collections/fedora/system_roles
-# positional arguments:
-#  ROLE_PATH        Path to a role to migrate
-#  COLLECTION_PATH  Path to collection where role should be migrated
+
+def file_replace(path, find, replace, file_patterns):
+    """
+    Replace a pattern `find` with `replace` in the files that match
+    `file_patterns` under `path`.
+    """
+    for root, dirs, files in os.walk(os.path.abspath(path)):
+        for file_pattern in file_patterns:
+            for filename in fnmatch.filter(files, file_pattern):
+                filepath = os.path.join(root, filename)
+                with open(filepath) as f:
+                    s = f.read()
+                s = re.sub(find, replace, s)
+                with open(filepath, "w") as f:
+                    f.write(s)
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument(
     '--namespace',
@@ -303,7 +326,6 @@ if args.molecule:
 
 # ==============================================================================
 
-
 def copy_tree_with_replace(src_path, prefix, role, TUPLE, isrole=True, ignoreme=None, symlinks=True):
     """
     1. Copy files and dirs in the dir to
@@ -340,22 +362,6 @@ def copy_tree_with_replace(src_path, prefix, role, TUPLE, isrole=True, ignoreme=
             lsrxfrm.run()
 
 
-def file_replace(path, find, replace, file_patterns):
-    """
-    Replace a pattern `find` with `replace` in the files that match
-    `file_patterns` under `path`.
-    """
-    for root, dirs, files in os.walk(os.path.abspath(path)):
-        for file_pattern in file_patterns:
-            for filename in fnmatch.filter(files, file_pattern):
-                filepath = os.path.join(root, filename)
-                with open(filepath) as f:
-                    s = f.read()
-                s = re.sub(find, replace, s)
-                with open(filepath, "w") as f:
-                    f.write(s)
-
-
 # Run with --role ROLE
 src_path = args.src_path.resolve() / role
 if not src_path.exists():
@@ -375,37 +381,30 @@ role_modules = get_role_modules(src_path)
 # DEST_PATH/ansible_collections/NAMESPACE/COLLECTION/roles/ROLE.
 copy_tree_with_replace(src_path, prefix, role, ROLE_DIRS)
 
-
 # ==============================================================================
 
-# Adjust role names to the collections style.
-def remove_or_reset_symlinks(path, role):
+def cleanup_symlinks(path, role):
     """
-    Clean up roles/linux-system-roles.rolename.
+    Clean up symlinks in tests/roles
     - Remove symlinks.
     - If linux-system-roles.rolename is an empty dir, rmdir it.
     """
-    nodes = sorted(list(path.rglob('*')), reverse=True)
-    for node in nodes:
-        if node.is_symlink():
-            node.unlink()
-        elif node.is_dir() and r'linux-system-roles.' + role == node.name and not any(node.iterdir()):
-            node.rmdir()
-
-
-def symlink_n_rolename(path, namespace, collection, role):
-    """
-    Handle rolename issues in the test playbooks.
-    """
     if path.exists():
-        remove_or_reset_symlinks(path, role)
+        nodes = sorted(list(path.rglob('*')), reverse=True)
+        for node in nodes:
+            if node.is_symlink() and r'linux-system-roles.' + role == node.name:
+                node.unlink()
+            elif node.is_dir() and r'linux-system-roles.' + role == node.name and not any(node.iterdir()):
+                node.rmdir()
         roles_dir = path / 'roles'
         if roles_dir.exists() and not any(roles_dir.iterdir()):
             roles_dir.rmdir()
 
 
-# Create tests_defaults.yml in tests for the molecule test.
 def add_to_tests_defaults(namespace, collection, role):
+    """
+    Create tests_defaults.yml in tests for the molecule test.
+    """
     tests_default = output / 'tests' / 'tests_default.yml'
     tests_default.parent.mkdir(parents=True, exist_ok=True)
     if tests_default.exists():
@@ -419,10 +418,11 @@ def add_to_tests_defaults(namespace, collection, role):
         with open(tests_default, "w") as f:
             f.write(s)
 
+
 copy_tree_with_replace(src_path, prefix, role, TESTS, isrole=False, ignoreme='artifacts')
 
 # remove symlinks in the tests/role, then updating the rolename to the collection format
-symlink_n_rolename(output / 'tests' / role, namespace, collection, role)
+cleanup_symlinks(output / 'tests' / role, role)
 add_to_tests_defaults(namespace, collection, role)
 
 # ==============================================================================
@@ -447,6 +447,9 @@ def process_readme(src_path, filename, rolename):
         dest,
         follow_symlinks=False
     )
+    dest = output / 'roles' / rolename
+    file_patterns = ['*.md']
+    file_replace(dest, 'linux-system-roles.' + rolename, prefix + rolename, file_patterns)
     if not rolename in NO_README_LINK and filename.startswith('README'):
         if filename == 'README.md':
             title = rolename
@@ -467,7 +470,7 @@ def process_readme(src_path, filename, rolename):
                 f.write(s)
 
 
-dest = output / Path('docs') / role
+dest = output / 'docs' / role
 for doc in DOCS:
     src = src_path / doc
     if src.is_dir():
@@ -487,8 +490,7 @@ for doc in DOCS:
 
 # Remove symlinks in the docs/role (e.g., in the examples).
 # Update the rolename to the collection format as done in the tests.
-docs_role_path = output / 'docs' / role
-symlink_n_rolename(docs_role_path, namespace, collection, role)
+cleanup_symlinks(dest, role)
 
 # ==============================================================================
 
@@ -681,6 +683,7 @@ def from_2dots_replace(match):
              match_group3, match.group(4))
     return match.group(0)
 
+
 # Update the python codes which import modules in plugins/{modules,modules_dir}.
 modules_dir = output / 'plugins' / 'modules'
 for rewrite_dir in (module_utils_dir, modules_dir):
@@ -753,7 +756,7 @@ for extra in extras:
                 # copy tests dir to output/'tests'
                 copy_tree_with_replace(sr, prefix, dr, TESTS, isrole=False, ignoreme='artifacts')
                 # remove symlinks in the tests/role, then updating the rolename to the collection format
-                symlink_n_rolename(output / 'tests' / dr, namespace, collection, dr)
+                cleanup_symlinks(output / 'tests' / dr, dr)
                 add_to_tests_defaults(namespace, collection, dr)
                 # copy README.md to output/roles/sr.name
                 readme = sr / 'README.md'
