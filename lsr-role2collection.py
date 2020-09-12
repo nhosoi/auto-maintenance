@@ -621,11 +621,16 @@ def from_replace(match):
     except AttributeError:
         parts5 = []
     # parts3 (e.g., [b'ROLE', b'subdir', b'module']) matches one module_utils or
-    # size of parts3 is 1 (e.g., [b'module']), in this case, module.py was moved to ROLE/module.py.
+    # size of parts3 is 1 (e.g., [b'module']), in this case, module.py was moved
+    # to ROLE/module.py or module is a dir.
     # If latter, match.group(3) has to be converted to b'ROLE.module'.
     if len(parts3) == 1:
-        match_group3 = (role + '.' + match.group(3).decode("utf-8")).encode()
-        parts3 = match_group3.split(b'.')
+        module_path = src_path / 'module_utils' / match.group(3).decode("utf-8")
+        if module_path.is_dir():
+            match_group3 = match.group(3)
+        else:
+            match_group3 = (role + '.' + match.group(3).decode("utf-8")).encode()
+            parts3 = match_group3.split(b'.')
     else:
         match_group3 = match.group(3)
     if parts3 in module_utils:
