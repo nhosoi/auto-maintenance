@@ -174,8 +174,8 @@ class LSRFileTransformer(LSRFileTransformerBase):
         if name0 == name1:
             return True
         else:
-            core0 = re.sub("[_\.]", "", name0)
-            core1 = re.sub("[_\.]", "", name1)
+            core0 = re.sub("[_\\.]", "", name0)
+            core1 = re.sub("[_\\.]", "", name1)
             if core0 == core1:
                 return True
             else:
@@ -446,6 +446,7 @@ add_to_tests_defaults(namespace, collection, role)
 
 # ==============================================================================
 
+
 # Copy docs, design_docs, and examples to
 # DEST_PATH/ansible_collections/NAMESPACE/COLLECTION/docs/ROLE.
 # Copy README.md to DEST_PATH/ansible_collections/NAMESPACE/COLLECTION/roles/ROLE.
@@ -467,12 +468,9 @@ def process_readme(src_path, filename, rolename, original=None):
     file_replace(
         dest, "linux-system-roles." + rolename, prefix + rolename, file_patterns
     )
-    dest = output / "roles" / rolename
-    file_patterns = ["*.md"]
-    file_replace(dest, "linux-system-roles." + rolename, prefix + rolename, file_patterns)
     if original:
         file_replace(dest, original, prefix + rolename, file_patterns)
-    if not rolename in NO_README_LINK and filename.startswith("README"):
+    if rolename not in NO_README_LINK and filename.startswith("README"):
         if filename == "README.md":
             title = rolename
         elif filename.startswith("README-"):
