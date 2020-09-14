@@ -37,7 +37,8 @@ PLAY_KEYS = {
     "import_playbook",
     "post_tasks",
     "pre_tasks",
-    "roles" "tasks",
+    "roles",
+    "tasks",
 }
 
 TASK_LIST_KWS = [

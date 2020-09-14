@@ -144,8 +144,10 @@ class LSRFileTransformer(LSRFileTransformerBase):
             if rolename == self.rolename or rolename == lsr_rolename:
                 ru_task[module_name]["name"] = prefix + self.rolename
             elif rolename.startswith("{{ role_path }}"):
-                match = re.match(r'{{ role_path }}/roles/([\w\d\.]+)', rolename)
-                ru_task[module_name]["name"] = prefix + "__" + match.group(1).replace(".", replace_dot)
+                match = re.match(r"{{ role_path }}/roles/([\w\d\.]+)", rolename)
+                ru_task[module_name]["name"] = (
+                    prefix + "__" + match.group(1).replace(".", replace_dot)
+                )
         elif module_name in role_modules:
             logging.debug(f"\ttask role module {module_name}")
             # assumes ru_task is an orderreddict
@@ -172,8 +174,8 @@ class LSRFileTransformer(LSRFileTransformerBase):
         if name0 == name1:
             return True
         else:
-            core0 = re.sub('[_\.]', '', name0)
-            core1 = re.sub('[_\.]', '', name1)
+            core0 = re.sub("[_\.]", "", name0)
+            core1 = re.sub("[_\.]", "", name1)
             if core0 == core1:
                 return True
             else:
@@ -191,7 +193,9 @@ class LSRFileTransformer(LSRFileTransformerBase):
                     key = "name"
                 else:
                     key = "role"
-                if role[key] == lsr_rolename or self.comp_rolenames(role[key], self.rolename):
+                if role[key] == lsr_rolename or self.comp_rolenames(
+                    role[key], self.rolename
+                ):
                     role[key] = prefix + self.rolename
                     changed = True
             elif role == lsr_rolename or self.comp_rolenames(role, self.rolename):
@@ -442,7 +446,6 @@ add_to_tests_defaults(namespace, collection, role)
 
 # ==============================================================================
 
-
 # Copy docs, design_docs, and examples to
 # DEST_PATH/ansible_collections/NAMESPACE/COLLECTION/docs/ROLE.
 # Copy README.md to DEST_PATH/ansible_collections/NAMESPACE/COLLECTION/roles/ROLE.
@@ -469,11 +472,11 @@ def process_readme(src_path, filename, rolename, original=None):
     file_replace(dest, "linux-system-roles." + rolename, prefix + rolename, file_patterns)
     if original:
         file_replace(dest, original, prefix + rolename, file_patterns)
-    if rolename not in NO_README_LINK and filename.startswith("README"):
+    if not rolename in NO_README_LINK and filename.startswith("README"):
         if filename == "README.md":
             title = rolename
         elif filename.startswith("README-"):
-            m = re.match("(README-)(.*)([.]md)", filename)
+            m = re.match(r"(README-)(.*)([.]md)", filename)
             title = rolename + "-" + m.group(2)
         main_doc = output / "README.md"
         if not main_doc.exists():
@@ -649,12 +652,12 @@ def from_replace(match):
     # to ROLE/module.py or module is a dir.
     # If latter, match.group(3) has to be converted to b'ROLE.module'.
     if len(parts3) == 1:
-        module_path = src_path / 'module_utils' / match.group(3).decode("utf-8")
+        module_path = src_path / "module_utils" / match.group(3).decode("utf-8")
         if module_path.is_dir():
             match_group3 = match.group(3)
         else:
-            match_group3 = (role + '.' + match.group(3).decode("utf-8")).encode()
-            parts3 = match_group3.split(b'.')
+            match_group3 = (role + "." + match.group(3).decode("utf-8")).encode()
+            parts3 = match_group3.split(b".")
     else:
         match_group3 = match.group(3)
     if parts3 in module_utils:
