@@ -121,9 +121,6 @@ FROM_RE = re.compile(
     br"(\bfrom) (ansible\.module_utils\.?)(\S+)? import (\(*(?:\n|\r\n)?)(.+)$",
     flags=re.M,
 )
-FROM2DOTS_RE = re.compile(
-    br"(\bfrom) \.\.(module_utils\.)(\S+) import (.+)$", flags=re.M
-)
 
 if os.environ.get("LSR_DEBUG") == "true":
     logging.getLogger().setLevel(logging.DEBUG)
@@ -145,9 +142,14 @@ class LSRFileTransformer(LSRFileTransformerBase):
                 ru_task[module_name]["name"] = prefix + self.rolename
             elif rolename.startswith("{{ role_path }}"):
                 match = re.match(r"{{ role_path }}/roles/([\w\d\.]+)", rolename)
-                ru_task[module_name]["name"] = (
-                    prefix + "__" + match.group(1).replace(".", replace_dot)
-                )
+                if match.group(1).startswith("__"):
+                    ru_task[module_name]["name"] = prefix + match.group(1).replace(
+                        ".", replace_dot
+                    )
+                else:
+                    ru_task[module_name]["name"] = (
+                        prefix + "__" + match.group(1).replace(".", replace_dot)
+                    )
         elif module_name in role_modules:
             logging.debug(f"\ttask role module {module_name}")
             # assumes ru_task is an orderreddict
@@ -235,6 +237,7 @@ def file_replace(path, find, replace, file_patterns):
                     f.write(s)
 
 
+HOME = os.environ.get("HOME")
 parser = argparse.ArgumentParser()
 parser.add_argument(
     "--namespace",
@@ -251,13 +254,13 @@ parser.add_argument(
 parser.add_argument(
     "--dest-path",
     type=Path,
-    default=os.environ.get("COLLECTION_DEST_PATH"),
+    default=os.environ.get("COLLECTION_DEST_PATH", HOME + "/.ansible/collections"),
     help="Path to parent of collection where role should be migrated",
 )
 parser.add_argument(
     "--src-path",
     type=Path,
-    default=os.environ.get("COLLECTION_SRC_PATH"),
+    default=os.environ.get("COLLECTION_SRC_PATH", HOME + "/linux-system-roles"),
     help="Path to linux-system-role",
 )
 parser.add_argument(
@@ -284,16 +287,31 @@ parser.add_argument(
         "default to '_'"
     ),
 )
-args = parser.parse_args()
+args, unknown = parser.parse_known_args()
+
+role = args.role
+if not role:
+    parser.print_help()
+    print("Message: role is not specified.")
+    os._exit(errno.EINVAL)
 
 namespace = args.namespace
 collection = args.collection
 prefix = namespace + "." + collection + "."
-role = args.role
-dest_path = args.dest_path.resolve()
-output = Path.joinpath(dest_path, "ansible_collections/" + namespace + "/" + collection)
-os.makedirs(output, exist_ok=True)
+top_dest_path = args.dest_path.resolve()
 replace_dot = args.replace_dot
+
+dest_path = Path.joinpath(
+    top_dest_path, "ansible_collections/" + namespace + "/" + collection
+)
+os.makedirs(dest_path, exist_ok=True)
+
+roles_dir = dest_path / "roles"
+tests_dir = dest_path / "tests"
+plugin_dir = dest_path / "plugins"
+modules_dir = plugin_dir / "modules"
+module_utils_dir = plugin_dir / "module_utils"
+docs_dir = dest_path / "docs"
 
 # Copy molecule related files and directories from linux-system-roles/template.
 if args.molecule:
@@ -303,12 +321,12 @@ if args.molecule:
         os._exit(errno.ENOENT)
     for mol in MOLECULE:
         src = src_path / mol
-        dest = output / mol
+        dest = dest_path / mol
         print(f"Copying {src} to {dest}")
         if src.is_dir():
             copytree(src, dest, symlinks=True, dirs_exist_ok=True)
         elif src.exists():
-            dest = output / mol
+            dest = dest_path / mol
             copy2(src, dest, follow_symlinks=False)
             if mol == ".yamllint.yml":
                 with open(dest) as f:
@@ -335,7 +353,7 @@ if args.molecule:
 
 
 def copy_tree_with_replace(
-    src_path, prefix, role, TUPLE, isrole=True, ignoreme=None, symlinks=True
+    src_path, dest_path, prefix, role, TUPLE, isrole=True, ignoreme=None, symlinks=True
 ):
     """
     1. Copy files and dirs in the dir to
@@ -349,9 +367,9 @@ def copy_tree_with_replace(
         src = src_path / dirname
         if src.is_dir():
             if isrole:
-                dest = output / "roles" / role / dirname
+                dest = roles_dir / role / dirname
             else:
-                dest = output / dirname / role
+                dest = dest_path / dirname / role
             print(f"Copying role {src} to {dest}")
             if ignoreme:
                 copytree(
@@ -384,7 +402,7 @@ role_modules = get_role_modules(src_path)
 
 # Role - copy subdirectories, tasks, defaults, vars, etc., in the system role to
 # DEST_PATH/ansible_collections/NAMESPACE/COLLECTION/roles/ROLE.
-copy_tree_with_replace(src_path, prefix, role, ROLE_DIRS)
+copy_tree_with_replace(src_path, dest_path, prefix, role, ROLE_DIRS)
 
 # ==============================================================================
 
@@ -415,7 +433,7 @@ def add_to_tests_defaults(namespace, collection, role):
     """
     Create tests_defaults.yml in tests for the molecule test.
     """
-    tests_default = output / "tests" / "tests_default.yml"
+    tests_default = tests_dir / "tests_default.yml"
     tests_default.parent.mkdir(parents=True, exist_ok=True)
     if tests_default.exists():
         with open(tests_default) as f:
@@ -437,11 +455,11 @@ def add_to_tests_defaults(namespace, collection, role):
 
 
 copy_tree_with_replace(
-    src_path, prefix, role, TESTS, isrole=False, ignoreme="artifacts"
+    src_path, dest_path, prefix, role, TESTS, isrole=False, ignoreme="artifacts"
 )
 
 # remove symlinks in the tests/role, then updating the rolename to the collection format
-cleanup_symlinks(output / "tests" / role, role)
+cleanup_symlinks(tests_dir / role, role)
 add_to_tests_defaults(namespace, collection, role)
 
 # ==============================================================================
@@ -453,17 +471,17 @@ add_to_tests_defaults(namespace, collection, role)
 # Generate a top level README.md which contains links to roles/ROLE/README.md.
 def process_readme(src_path, filename, rolename, original=None):
     """
-    Copy src_path/filename to output/docs/rolename.
+    Copy src_path/filename to dest_path/docs/rolename.
     filename could be README.md, README-something.md, or something.md.
-    Create a primary README.md in output, which points to output/docs/rolename/filename
+    Create a primary README.md in dest_path, which points to dest_path/docs/rolename/filename
     with the title rolename or rolename-something.
     """
     src = src_path / filename
-    dest = output / "roles" / rolename / filename
+    dest = roles_dir / rolename / filename
     # copy
     print(f"Copying doc {filename} to {dest}")
     copy2(src, dest, follow_symlinks=False)
-    dest = output / "roles" / rolename
+    dest = roles_dir / rolename
     file_patterns = ["*.md"]
     file_replace(
         dest, "linux-system-roles." + rolename, prefix + rolename, file_patterns
@@ -476,7 +494,7 @@ def process_readme(src_path, filename, rolename, original=None):
         elif filename.startswith("README-"):
             m = re.match(r"(README-)(.*)([.]md)", filename)
             title = rolename + "-" + m.group(2)
-        main_doc = output / "README.md"
+        main_doc = dest_path / "README.md"
         if not main_doc.exists():
             s = textwrap.dedent(
                 """\
@@ -501,7 +519,7 @@ def process_readme(src_path, filename, rolename, original=None):
                 f.write(s)
 
 
-dest = output / "docs" / role
+dest = dest_path / "docs" / role
 for doc in DOCS:
     src = src_path / doc
     if src.is_dir():
@@ -526,10 +544,10 @@ cleanup_symlinks(dest, role)
 # ==============================================================================
 
 # Copy library, module_utils, plugins
-# Library and plugins are copied to output/plugins
+# Library and plugins are copied to dest_path/plugins
 # If plugin is in SUBDIR (currently, just module_utils),
-#   module_utils/*.py are to output/plugins/module_utils/ROLE/*.py
-#   module_utils/subdir/*.py are to output/plugins/module_utils/subdir/*.py
+#   module_utils/*.py are to dest_path/plugins/module_utils/ROLE/*.py
+#   module_utils/subdir/*.py are to dest_path/plugins/module_utils/subdir/*.py
 SUBDIR = ("module_utils",)
 for plugin in PLUGINS:
     src = src_path / plugin
@@ -540,33 +558,32 @@ for plugin in PLUGINS:
         for sr in src.iterdir():
             if sr.is_dir():
                 # If src/sr is a directory, copy it to the dest
-                dest = output / "plugins" / plugin_name / sr.name
+                dest = plugin_dir / plugin_name / sr.name
                 print(f"Copying plugin {sr} to {dest}")
                 copytree(sr, dest, dirs_exist_ok=True)
             else:
                 # Otherwise, copy it to the plugins/plugin_name/ROLE
-                dest = output / "plugins" / plugin_name / role
+                dest = plugin_dir / plugin_name / role
                 dest.mkdir(parents=True, exist_ok=True)
                 print(f"Copying plugin {sr} to {dest}")
                 copy2(sr, dest, follow_symlinks=False)
     else:
-        dest = output / "plugins" / plugin_name
+        dest = plugin_dir / plugin_name
         print(f"Copying plugin {src} to {dest}")
         copytree(src, dest, dirs_exist_ok=True)
 
-additional_rewrites = []
-module_utils = []
-module_utils_dir = output / "plugins" / "module_utils"
-if module_utils_dir.is_dir():
-    for root, dirs, files in os.walk(module_utils_dir):
-        for filename in files:
-            if os.path.splitext(filename)[1] != ".py":
-                continue
-            full_path = (Path(root) / filename).relative_to(module_utils_dir)
-            parts = bytes(full_path)[:-3].split(b"/")
-            if parts[-1] == b"__init__":
-                del parts[-1]
-            module_utils.append(parts)
+
+def gather_module_utils_parts(module_utils_dir):
+    if module_utils_dir.is_dir():
+        for root, dirs, files in os.walk(module_utils_dir):
+            for filename in files:
+                if os.path.splitext(filename)[1] != ".py":
+                    continue
+                full_path = (Path(root) / filename).relative_to(module_utils_dir)
+                parts = bytes(full_path)[:-3].split(b"/")
+                if parts[-1] == b"__init__":
+                    del parts[-1]
+                module_utils.append(parts)
 
 
 def import_replace(match):
@@ -576,18 +593,35 @@ def import_replace(match):
     is returned to replace.
     """
     parts = match.group(3).split(b".")
+    match_group3 = match.group(3)
+    src_module_path = src_path / "module_utils" / match.group(3).decode("utf-8")
+    dest_module_path0 = module_utils_dir / match.group(3).decode("utf-8")
+    dest_module_path1 = module_utils_dir / role
     if len(parts) == 1:
-        match_group3 = (role + "." + match.group(3).decode("utf-8")).encode()
-        parts = match_group3.split(b".")
+        if not src_module_path.is_dir() and (
+            dest_module_path0.is_dir() or dest_module_path1.is_dir()
+        ):
+            match_group3 = (role + "." + match.group(3).decode("utf-8")).encode()
+            parts = match_group3.split(b".")
     if parts in module_utils:
         if match.group(1) == b"import" and match.group(4) == b"":
             additional_rewrites.append(parts)
-            return b"import ansible_collections.%s.%s.plugins.module_utils.%s as %s" % (
-                bytes(namespace, "utf-8"),
-                bytes(collection, "utf-8"),
-                match_group3,
-                parts[-1],
-            )
+            if src_module_path.exists() or Path(str(src_module_path + ".py")).exists():
+                return b"import ansible_collections.%s.%s.plugins.module_utils.%s" % (
+                    bytes(namespace, "utf-8"),
+                    bytes(collection, "utf-8"),
+                    match_group3,
+                )
+            else:
+                return (
+                    b"import ansible_collections.%s.%s.plugins.module_utils.%s as %s"
+                    % (
+                        bytes(namespace, "utf-8"),
+                        bytes(collection, "utf-8"),
+                        match_group3,
+                        parts[-1],
+                    )
+                )
         return b"%s ansible_collections.%s.%s.plugins.module_utils.%s%s" % (
             match.group(1),
             bytes(namespace, "utf-8"),
@@ -649,15 +683,16 @@ def from_replace(match):
     # size of parts3 is 1 (e.g., [b'module']), in this case, module.py was moved
     # to ROLE/module.py or module is a dir.
     # If latter, match.group(3) has to be converted to b'ROLE.module'.
+    match_group3 = match.group(3)
     if len(parts3) == 1:
-        module_path = src_path / "module_utils" / match.group(3).decode("utf-8")
-        if module_path.is_dir():
-            match_group3 = match.group(3)
-        else:
+        src_module_path = src_path / "module_utils" / match.group(3).decode("utf-8")
+        dest_module_path0 = module_utils_dir / match.group(3).decode("utf-8")
+        dest_module_path1 = module_utils_dir / role
+        if not src_module_path.is_dir() and (
+            dest_module_path0.is_dir() or dest_module_path1.is_dir()
+        ):
             match_group3 = (role + "." + match.group(3).decode("utf-8")).encode()
             parts3 = match_group3.split(b".")
-    else:
-        match_group3 = match.group(3)
     if parts3 in module_utils:
         from_file0, lfrom_file0, from_file1, lfrom_file1 = get_candidates(
             parts3, parts5
@@ -743,32 +778,10 @@ def from_replace(match):
     return match.group(0)
 
 
-def from_2dots_replace(match):
-    """
-    If 'from ..module_utils.something import identifier' matches,
-    'from ansible_collections.NAMESPACE.COLLECTION.plugins.module_utils.something import identifier'
-    is returned to replaced.
-    """
-    try:
-        parts3 = match.group(3).split(b".")
-    except AttributeError:
-        parts3 = None
-    if len(parts3) == 1:
-        match_group3 = (role + "." + match.group(3).decode("utf-8")).encode()
-        parts3 = match_group3.split(b".")
-    if parts3 in module_utils:
-        return b"%s ansible_collections.%s.%s.plugins.module_utils.%s import %s" % (
-            match.group(1),
-            bytes(namespace, "utf-8"),
-            bytes(collection, "utf-8"),
-            match_group3,
-            match.group(4),
-        )
-    return match.group(0)
-
-
 # Update the python codes which import modules in plugins/{modules,modules_dir}.
-modules_dir = output / "plugins" / "modules"
+additional_rewrites = []
+module_utils = []
+gather_module_utils_parts(module_utils_dir)
 for rewrite_dir in (module_utils_dir, modules_dir):
     if rewrite_dir.is_dir():
         for root, dirs, files in os.walk(rewrite_dir):
@@ -779,7 +792,6 @@ for rewrite_dir in (module_utils_dir, modules_dir):
                 text = full_path.read_bytes()
                 new_text = IMPORT_RE.sub(import_replace, text)
                 new_text = FROM_RE.sub(from_replace, new_text)
-                new_text = FROM2DOTS_RE.sub(from_2dots_replace, new_text)
                 for rewrite in additional_rewrites:
                     pattern = re.compile(
                         re.escape(br"ansible.module_utils.%s" % b".".join(rewrite))
@@ -800,7 +812,11 @@ def add_rolename(filename, rolename):
     A file with no extension, e.g., LICENSE is to LICENSE-rolename
     """
     if filename.find(".", 1) > 0:
-        with_rolename = re.sub("([.A-Za-z0-1]*$)", "-" + rolename + r"\1", filename)
+        with_rolename = re.sub(
+            r"([\w\d_\.]*)(\.)([\w\d]*)",
+            r"\1" + "-" + rolename + r"\2" + r"\3",
+            filename,
+        )
     else:
         with_rolename = filename + "-" + rolename
     return with_rolename
@@ -817,17 +833,20 @@ for extra in extras:
         if extra.name == "roles":
             for sr in extra.iterdir():
                 # If a role name contains '.', replace it with replace_dot
-                # convert nested subroles to prefix name with __
-                dr = "__" + sr.name.replace(".", replace_dot)
-                copy_tree_with_replace(sr, prefix, dr, ROLE_DIRS)
-                # copy tests dir to output/"tests"
+                # convert nested subroles to prefix name with __ if not.
+                if sr.name.startswith("__"):
+                    dr = sr.name.replace(".", replace_dot)
+                else:
+                    dr = "__" + sr.name.replace(".", replace_dot)
+                copy_tree_with_replace(sr, dest_path, prefix, dr, ROLE_DIRS)
+                # copy tests dir to dest_path/"tests"
                 copy_tree_with_replace(
-                    sr, prefix, dr, TESTS, isrole=False, ignoreme="artifacts"
+                    sr, dest_path, prefix, dr, TESTS, isrole=False, ignoreme="artifacts"
                 )
                 # remove symlinks in the tests/role, then updating the rolename to the collection format
-                cleanup_symlinks(output / "tests" / dr, dr)
+                cleanup_symlinks(tests_dir / dr, dr)
                 add_to_tests_defaults(namespace, collection, dr)
-                # copy README.md to output/roles/sr.name
+                # copy README.md to dest_path/roles/sr.name
                 readme = sr / "README.md"
                 if readme.is_file():
                     process_readme(sr, "README.md", dr, original=sr.name)
@@ -835,7 +854,7 @@ for extra in extras:
                     # replace "sr.name" with "dr" in role_dir
                     dirs = ["roles", "docs", "tests"]
                     for dir in dirs:
-                        role_dir = output / dir
+                        role_dir = dest_path / dir
                         file_patterns = ["*.yml", "*.md"]
                         file_replace(
                             role_dir,
@@ -845,23 +864,23 @@ for extra in extras:
                         )
         # Other extra directories are copied to the collection dir as they are.
         else:
-            dest = output / extra.name
+            dest = dest_path / extra.name
             print(f"Copying extra {extra} to {dest}")
             copytree(extra, dest, dirs_exist_ok=True)
     # Other extra files.
     else:
         if extra.name.endswith(".yml") and "playbook" in extra.name:
             # some-playbook.yml is copied to playbooks/role dir.
-            dest = output / "playbooks" / role
+            dest = dest_path / "playbooks" / role
             dest.mkdir(parents=True, exist_ok=True)
         elif extra.name in EXTRA_NO_ROLENAME:
             # If the file in the EXTRA_NO_ROLENAME tuple, it is copied to the collection
             # dir as it is.
-            dest = output / extra.name
+            dest = dest_path / extra.name
         else:
             # If the extra file 'filename' has no extension, it is copied to the collection dir as
             # 'filename-ROLE'. If the extra file is 'filename.ext', it is copied to 'filename-ROLE.ext'.
-            dest = output / add_rolename(extra.name, role)
+            dest = dest_path / add_rolename(extra.name, role)
         print(f"Copying extra {extra} to {dest}")
         copy2(extra, dest, follow_symlinks=False)
 
@@ -869,8 +888,8 @@ default_collections_paths = "~/.ansible/collections:/usr/share/ansible/collectio
 default_collections_paths_list = list(
     map(os.path.expanduser, default_collections_paths.split(":"))
 )
-current_dest = os.path.expanduser(str(dest_path))
-# dest_path is not in the default collections path.
+current_dest = os.path.expanduser(str(top_dest_path))
+# top_dest_path is not in the default collections path.
 # suggest to run ansible-playbook with ANSIBLE_COLLECTIONS_PATHS env var.
 if current_dest not in default_collections_paths_list:
     ansible_collections_paths = current_dest + ":" + default_collections_paths

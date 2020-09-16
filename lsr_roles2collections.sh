@@ -26,7 +26,7 @@ do
         git pull
     fi
     cd "$CWD" || exit
-    python lsr-role2collection.py --role "$role"
+    python lsr_role2collection.py --role "$role"
 done
 role="template"
 if [ ! -d "$COLLECTION_SRC_PATH/$role" ]; then
@@ -40,4 +40,4 @@ else
     git pull
 fi
 cd "$CWD" || exit
-python lsr-role2collection.py --molecule
+python lsr_role2collection.py --molecule
