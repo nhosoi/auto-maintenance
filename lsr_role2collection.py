@@ -213,6 +213,40 @@ class LSRFileTransformer(LSRFileTransformerBase):
         super().write()
 
 
+# Once python 3.8 is available in Travis CI,
+# replace lsr_copytree with shutil.copytree with dirs_exist_ok=True.
+def lsr_copytree(src, dest, symlinks=False, dirs_exist_ok=False, ignore=None):
+    ipatterns = ignore_patterns(ignore)
+    if dest.exists():
+        if dest.is_dir():
+            for sr in src.iterdir():
+                subsrc = src / sr.name
+                subdest = dest / sr.name
+                if ignore:
+                    if sr.name != ignore:
+                        if subsrc.is_dir():
+                            copytree(
+                                subsrc, subdest, symlinks=symlinks, ignore=ipatterns
+                            )
+                        else:
+                            copy2(subsrc, subdest, follow_symlinks=symlinks)
+                else:
+                    if subsrc.is_dir():
+                        copytree(subsrc, subdest, symlinks=symlinks)
+                    else:
+                        copy2(subsrc, subdest, follow_symlinks=symlinks)
+        elif ignore:
+            dest.unlink()
+            copytree(src, dest, ignore=ipatterns, symlinks=symlinks)
+        else:
+            dest.unlink()
+            copytree(src, dest, symlinks=symlinks)
+    elif ignore:
+        copytree(src, dest, ignore=ipatterns, symlinks=symlinks)
+    else:
+        copytree(src, dest, symlinks=symlinks)
+
+
 def dir_to_plugin(v):
     if v[-8:] == "_plugins":
         return v[:-8]
@@ -324,7 +358,7 @@ if args.molecule:
         dest = dest_path / mol
         print(f"Copying {src} to {dest}")
         if src.is_dir():
-            copytree(src, dest, symlinks=True, dirs_exist_ok=True)
+            copytree(src, dest, symlinks=True)
         elif src.exists():
             dest = dest_path / mol
             copy2(src, dest, follow_symlinks=False)
@@ -377,10 +411,9 @@ def copy_tree_with_replace(
                     dest,
                     ignore=ignore_patterns(ignoreme),
                     symlinks=symlinks,
-                    dirs_exist_ok=True,
                 )
             else:
-                copytree(src, dest, symlinks=symlinks, dirs_exist_ok=True)
+                copytree(src, dest, symlinks=symlinks)
             lsrxfrm = LSRTransformer(dest, False, role, LSRFileTransformer)
             lsrxfrm.run()
 
@@ -524,11 +557,11 @@ for doc in DOCS:
     src = src_path / doc
     if src.is_dir():
         print(f"Copying docs {src} to {dest}")
-        copytree(
+        lsr_copytree(
             src,
             dest,
             symlinks=False,
-            ignore=ignore_patterns("roles"),
+            ignore="roles",
             dirs_exist_ok=True,
         )
         if doc == "examples":
@@ -560,7 +593,7 @@ for plugin in PLUGINS:
                 # If src/sr is a directory, copy it to the dest
                 dest = plugin_dir / plugin_name / sr.name
                 print(f"Copying plugin {sr} to {dest}")
-                copytree(sr, dest, dirs_exist_ok=True)
+                lsr_copytree(sr, dest)
             else:
                 # Otherwise, copy it to the plugins/plugin_name/ROLE
                 dest = plugin_dir / plugin_name / role
@@ -570,7 +603,7 @@ for plugin in PLUGINS:
     else:
         dest = plugin_dir / plugin_name
         print(f"Copying plugin {src} to {dest}")
-        copytree(src, dest, dirs_exist_ok=True)
+        lsr_copytree(src, dest)
 
 
 def gather_module_utils_parts(module_utils_dir):
@@ -866,7 +899,7 @@ for extra in extras:
         else:
             dest = dest_path / extra.name
             print(f"Copying extra {extra} to {dest}")
-            copytree(extra, dest, dirs_exist_ok=True)
+            copytree(extra, dest)
     # Other extra files.
     else:
         if extra.name.endswith(".yml") and "playbook" in extra.name:
