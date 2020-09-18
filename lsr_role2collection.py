@@ -880,7 +880,6 @@ for extra in extras:
                 )
                 # remove symlinks in the tests/role, then updating the rolename to the collection format
                 cleanup_symlinks(tests_dir / dr, dr)
-                add_to_tests_defaults(namespace, collection, dr)
                 # copy README.md to dest_path/roles/sr.name
                 readme = sr / "README.md"
                 if readme.is_file():
