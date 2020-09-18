@@ -1,7 +1,7 @@
 #!/bin/bash
 
 COLLECTION_SRC_PATH=${COLLECTION_SRC_PATH:-"${HOME}/linux-system-roles"}
-COLLECTION_DEST_PATH=${COLLECTION_DEST_PATH:-"${HOME}/collections"}
+COLLECTION_DEST_PATH=${COLLECTION_DEST_PATH:-"${HOME}/.ansible/collections"}
 ROLES=${ROLES:-"certificate kdump kernel_settings logging metrics nbde_client nbde_server network selinux storage timesync tlog tuned"}
 CWD=$(pwd)
 
@@ -40,4 +40,4 @@ else
     git pull
 fi
 cd "$CWD" || exit
-python lsr_role2collection.py --molecule
+python lsr_role2collection.py --tox

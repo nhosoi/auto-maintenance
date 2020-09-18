@@ -9,8 +9,8 @@
 #                        [--collection COLLECTION_NAME]
 #                        --src-path COLLECTION_SRC_PATH
 #                        --dest-path COLLECTION_DEST_PATH
-#                        --role ROLE_NAME | --molecule
-#                        (if --molecule is set, COLLECTION_SRC_PATH/template is expected)
+#                        --role ROLE_NAME | --tox
+#                        (if --tox is set, COLLECTION_SRC_PATH/template is expected)
 #                        [--replace-dot STR]
 #                        [-h]
 # Or
@@ -78,11 +78,13 @@ DOCS = (
     "DCO",
 )
 
-MOLECULE = (
+TOX = (
     ".ansible-lint",
     "custom_requirements.txt",
     "molecule",
     "molecule_extra_requirements.txt",
+    "pylint_extra_requirements.txt",
+    "pytest_extra_requirements.txt",
     "tox.ini",
     ".travis",
     ".travis.yml",
@@ -114,7 +116,7 @@ EXTRA_NO_ROLENAME = ()
 # Do not add a link in this tuple to the main README.md.
 NO_README_LINK = ("__rsyslog",)
 
-ALL_DIRS = ROLE_DIRS + PLUGINS + TESTS + DOCS + MOLECULE + DO_NOT_COPY
+ALL_DIRS = ROLE_DIRS + PLUGINS + TESTS + DOCS + TOX + DO_NOT_COPY
 
 IMPORT_RE = re.compile(br"(\bimport) (ansible\.module_utils\.)(\S+)(.*)$", flags=re.M)
 FROM_RE = re.compile(
@@ -304,11 +306,11 @@ parser.add_argument(
     help="Role to convert to collection",
 )
 parser.add_argument(
-    "--molecule",
+    "--tox",
     action="store_true",
-    default=os.environ.get("COLLECTION_MOLECULE", False),
+    default=os.environ.get("COLLECTION_TOX", False),
     help=(
-        "If set, molecule is copied from SRC_PATH/template, which must exist. "
+        "If set, tox related files are copied from SRC_PATH/template, which must exist. "
         "In that case '--role ROLE' is ignored."
     ),
 )
@@ -324,9 +326,9 @@ parser.add_argument(
 args, unknown = parser.parse_known_args()
 
 role = args.role
-if not role:
+if not role and not args.tox:
     parser.print_help()
-    print("Message: role is not specified.")
+    print("Message: both role and tox are not specified.")
     os._exit(errno.EINVAL)
 
 namespace = args.namespace
@@ -347,13 +349,13 @@ modules_dir = plugin_dir / "modules"
 module_utils_dir = plugin_dir / "module_utils"
 docs_dir = dest_path / "docs"
 
-# Copy molecule related files and directories from linux-system-roles/template.
-if args.molecule:
+# Copy tox related files and directories from linux-system-roles/template.
+if args.tox:
     src_path = args.src_path.resolve() / "template"
     if not src_path.exists():
         print(f"Error: {src_path} does not exists.")
         os._exit(errno.ENOENT)
-    for mol in MOLECULE:
+    for mol in TOX:
         src = src_path / mol
         dest = dest_path / mol
         print(f"Copying {src} to {dest}")
@@ -464,7 +466,7 @@ def cleanup_symlinks(path, role):
 
 def add_to_tests_defaults(namespace, collection, role):
     """
-    Create tests_defaults.yml in tests for the molecule test.
+    Create tests_defaults.yml in tests for the tox test.
     """
     tests_default = tests_dir / "tests_default.yml"
     tests_default.parent.mkdir(parents=True, exist_ok=True)
