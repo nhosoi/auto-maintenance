@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import tempfile
+import textwrap
 from pathlib import Path
 import unittest
 
@@ -24,7 +25,18 @@ namespace = os.environ.get("COLLECTION_NAMESPACE", "fedora")
 collection_name = os.environ.get("COLLECTION_NAME", "system_roles")
 rolename = "systemrole"
 
-test_yaml_str = "# SPDX-License-Identifier: MIT\n---\n- name: Ensure that the role runs with default parameters\n  hosts: all\n  tasks:\n    - name: default task\n      {0}:\n        {1} {2}{3}{4}\n"
+test_yaml_str = textwrap.dedent(
+    """\
+    # SPDX-License-Identifier: MIT
+    ---
+    - name: Ensure that the role runs with default parameters
+      hosts: all
+      tasks:
+        - name: default task
+          {0}:
+            {1} {2}{3}{4}
+    """
+)
 prefix = namespace + "." + collection_name
 prefixdot = prefix + "."
 
@@ -364,7 +376,20 @@ class LSRRole2Collection(unittest.TestCase):
         gather_module_utils_parts(dest_module_dir_core)
 
         input = bytes(
-            "# pylint: disable=import-error, no-name-in-module\n{0}.basic import AnsibleModule\n{0}.{1} import {2}\n{0}.{1} import MyError\n{0}.{1}.{3} import (\n    ArgUtil,\n    ArgValidator_ListConnections,    ValidationError,\n)\n{0}.{1}.{4} import Util\n{0}.{1} import {5}\n".format(
+            textwrap.dedent(
+                """\
+                # pylint: disable=import-error, no-name-in-module
+                {0}.basic import AnsibleModule
+                {0}.{1} import {2}
+                {0}.{1} import MyError
+                {0}.{1}.{3} import (
+                    ArgUtil,
+                    ArgValidator_ListConnections,    ValidationError,
+                )
+                {0}.{1}.{4} import Util
+                {0}.{1} import {5}
+                """
+            ).format(
                 "from ansible.module_utils",
                 module_name,
                 test_files[0],
@@ -375,7 +400,20 @@ class LSRRole2Collection(unittest.TestCase):
             "utf-8",
         )
         expected = bytes(
-            "# pylint: disable=import-error, no-name-in-module\nfrom ansible.module_utils.basic import AnsibleModule\n{0}.{1}.{2}.plugins.module_utils.{3} import {4}\n{0}.{1}.{2}.plugins.module_utils.{3}.__init__ import MyError\n{0}.{1}.{2}.plugins.module_utils.{3}.{5} import (\n    ArgUtil,\n    ArgValidator_ListConnections,    ValidationError,\n)\n{0}.{1}.{2}.plugins.module_utils.{3}.{6} import Util\n{0}.{1}.{2}.plugins.module_utils.{3} import {7}\n".format(
+            textwrap.dedent(
+                """\
+                # pylint: disable=import-error, no-name-in-module
+                from ansible.module_utils.basic import AnsibleModule
+                {0}.{1}.{2}.plugins.module_utils.{3} import {4}
+                {0}.{1}.{2}.plugins.module_utils.{3}.__init__ import MyError
+                {0}.{1}.{2}.plugins.module_utils.{3}.{5} import (
+                    ArgUtil,
+                    ArgValidator_ListConnections,    ValidationError,
+                )
+                {0}.{1}.{2}.plugins.module_utils.{3}.{6} import Util
+                {0}.{1}.{2}.plugins.module_utils.{3} import {7}
+                """
+            ).format(
                 "from ansible_collections",
                 namespace,
                 collection_name,
