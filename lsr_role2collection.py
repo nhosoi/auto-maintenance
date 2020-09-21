@@ -480,7 +480,7 @@ def add_to_tests_defaults(namespace, collection, role):
         s = textwrap.dedent(
             """\
             - name: Ensure that the role runs with default parameters
-              hosts: all
+              hosts: localhost
               roles:
                 - {0}.{1}.{2}
             """
