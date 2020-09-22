@@ -11,6 +11,7 @@
 #                        --dest-path COLLECTION_DEST_PATH
 #                        --role ROLE_NAME | --tox
 #                        (if --tox is set, COLLECTION_SRC_PATH/template is expected)
+#                        [--subrole-prefix STR]
 #                        [--replace-dot STR]
 #                        [-h]
 # Or
@@ -113,9 +114,6 @@ DO_NOT_COPY = (
 # Do not add -ROLENAME to the copied extra file.
 EXTRA_NO_ROLENAME = ()
 
-# Do not add a link in this tuple to the main README.md.
-NO_README_LINK = ("__rsyslog",)
-
 ALL_DIRS = ROLE_DIRS + PLUGINS + TESTS + DOCS + TOX + DO_NOT_COPY
 
 IMPORT_RE = re.compile(br"(\bimport) (ansible\.module_utils\.)(\S+)(.*)$", flags=re.M)
@@ -144,13 +142,15 @@ class LSRFileTransformer(LSRFileTransformerBase):
                 ru_task[module_name]["name"] = prefix + self.rolename
             elif rolename.startswith("{{ role_path }}"):
                 match = re.match(r"{{ role_path }}/roles/([\w\d\.]+)", rolename)
-                if match.group(1).startswith("__"):
+                if match.group(1).startswith(subrole_prefix):
                     ru_task[module_name]["name"] = prefix + match.group(1).replace(
                         ".", replace_dot
                     )
                 else:
                     ru_task[module_name]["name"] = (
-                        prefix + "__" + match.group(1).replace(".", replace_dot)
+                        prefix
+                        + subrole_prefix
+                        + match.group(1).replace(".", replace_dot)
                     )
         elif module_name in role_modules:
             logging.debug(f"\ttask role module {module_name}")
@@ -319,8 +319,17 @@ parser.add_argument(
     type=str,
     default=os.environ.get("COLLECTION_REPLACE_DOT", "_"),
     help=(
-        "If sub-role name contains dots, replace them with the given value; "
+        "If sub-role name contains dots, replace them with the specified value; "
         "default to '_'"
+    ),
+)
+parser.add_argument(
+    "--subrole-prefix",
+    type=str,
+    default=os.environ.get("COLLECTION_SUBROLE_PREFIX", "__"),
+    help=(
+        "If sub-role name prefix does not match with the value, replace it with the specified value; "
+        "default to '__'"
     ),
 )
 args, unknown = parser.parse_known_args()
@@ -336,6 +345,7 @@ collection = args.collection
 prefix = namespace + "." + collection + "."
 top_dest_path = args.dest_path.resolve()
 replace_dot = args.replace_dot
+subrole_prefix = args.subrole_prefix
 
 dest_path = Path.joinpath(
     top_dest_path, "ansible_collections/" + namespace + "/" + collection
@@ -523,7 +533,7 @@ def process_readme(src_path, filename, rolename, original=None):
     )
     if original:
         file_replace(dest, original, prefix + rolename, file_patterns)
-    if rolename not in NO_README_LINK and filename.startswith("README"):
+    if rolename not in no_readme_link and filename.startswith("README"):
         if filename == "README.md":
             title = rolename
         elif filename.startswith("README-"):
@@ -555,6 +565,7 @@ def process_readme(src_path, filename, rolename, original=None):
 
 
 dest = dest_path / "docs" / role
+no_readme_link = []
 for doc in DOCS:
     src = src_path / doc
     if src.is_dir():
@@ -868,11 +879,11 @@ for extra in extras:
         if extra.name == "roles":
             for sr in extra.iterdir():
                 # If a role name contains '.', replace it with replace_dot
-                # convert nested subroles to prefix name with __ if not.
-                if sr.name.startswith("__"):
-                    dr = sr.name.replace(".", replace_dot)
-                else:
-                    dr = "__" + sr.name.replace(".", replace_dot)
+                # convert nested subroles to prefix name with subrole_prefix.
+                if sr.name.startswith("_"):
+                    sr.name = re.sub("^_*", "", sr.name)
+                dr = subrole_prefix + sr.name.replace(".", replace_dot)
+                no_readme_link.append(dr)
                 copy_tree_with_replace(sr, dest_path, prefix, dr, ROLE_DIRS)
                 # copy tests dir to dest_path/"tests"
                 copy_tree_with_replace(
