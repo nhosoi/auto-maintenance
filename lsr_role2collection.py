@@ -11,6 +11,7 @@
 #                        --dest-path COLLECTION_DEST_PATH
 #                        --role ROLE_NAME | --tox
 #                        (if --tox is set, COLLECTION_SRC_PATH/template is expected)
+#                        [--subrole-prefix STR]
 #                        [--replace-dot STR]
 #                        [-h]
 # Or
@@ -141,9 +142,16 @@ class LSRFileTransformer(LSRFileTransformerBase):
                 ru_task[module_name]["name"] = prefix + self.rolename
             elif rolename.startswith("{{ role_path }}"):
                 match = re.match(r"{{ role_path }}/roles/([\w\d\.]+)", rolename)
-                ru_task[module_name]["name"] = prefix + match.group(1).replace(
-                    ".", replace_dot
-                )
+                if match.group(1).startswith(subrole_prefix):
+                    ru_task[module_name]["name"] = prefix + match.group(1).replace(
+                        ".", replace_dot
+                    )
+                else:
+                    ru_task[module_name]["name"] = (
+                        prefix
+                        + subrole_prefix
+                        + match.group(1).replace(".", replace_dot)
+                    )
         elif module_name in role_modules:
             logging.debug(f"\ttask role module {module_name}")
             # assumes ru_task is an orderreddict
@@ -289,7 +297,7 @@ parser.add_argument(
     "--src-path",
     type=Path,
     default=os.environ.get("COLLECTION_SRC_PATH", HOME + "/linux-system-roles"),
-    help="Path to linux-system-role",
+    help="Path to linux-system-roles",
 )
 parser.add_argument(
     "--role",
@@ -315,6 +323,15 @@ parser.add_argument(
         "default to '_'"
     ),
 )
+parser.add_argument(
+    "--subrole-prefix",
+    type=str,
+    default=os.environ.get("COLLECTION_SUBROLE_PREFIX", ""),
+    help=(
+        "If sub-role name does not start with the specified value, "
+        "change the name to start with the value; default to an empty string"
+    ),
+)
 args, unknown = parser.parse_known_args()
 
 role = args.role
@@ -328,6 +345,7 @@ collection = args.collection
 prefix = namespace + "." + collection + "."
 top_dest_path = args.dest_path.resolve()
 replace_dot = args.replace_dot
+subrole_prefix = args.subrole_prefix
 
 dest_path = Path.joinpath(
     top_dest_path, "ansible_collections/" + namespace + "/" + collection
@@ -889,7 +907,11 @@ for extra in extras:
         if extra.name == "roles":
             for sr in extra.iterdir():
                 # If a role name contains '.', replace it with replace_dot
-                dr = sr.name.replace(".", replace_dot)
+                # convert nested subroles to prefix name with subrole_prefix.
+                if sr.name.startswith(subrole_prefix):
+                    dr = sr.name.replace(".", replace_dot)
+                else:
+                    dr = subrole_prefix + sr.name.replace(".", replace_dot)
                 copy_tree_with_replace(sr, dest_path, prefix, dr, ROLE_DIRS)
                 # copy tests dir to dest_path/"tests"
                 copy_tree_with_replace(
