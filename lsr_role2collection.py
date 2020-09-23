@@ -11,7 +11,6 @@
 #                        --dest-path COLLECTION_DEST_PATH
 #                        --role ROLE_NAME | --tox
 #                        (if --tox is set, COLLECTION_SRC_PATH/template is expected)
-#                        [--subrole-prefix STR]
 #                        [--replace-dot STR]
 #                        [-h]
 # Or
@@ -142,16 +141,9 @@ class LSRFileTransformer(LSRFileTransformerBase):
                 ru_task[module_name]["name"] = prefix + self.rolename
             elif rolename.startswith("{{ role_path }}"):
                 match = re.match(r"{{ role_path }}/roles/([\w\d\.]+)", rolename)
-                if match.group(1).startswith("_"):
-                    ru_task[module_name]["name"] = prefix + match.group(1).replace(
-                        ".", replace_dot
-                    )
-                else:
-                    ru_task[module_name]["name"] = (
-                        prefix
-                        + subrole_prefix
-                        + match.group(1).replace(".", replace_dot)
-                    )
+                ru_task[module_name]["name"] = prefix + match.group(1).replace(
+                    ".", replace_dot
+                )
         elif module_name in role_modules:
             logging.debug(f"\ttask role module {module_name}")
             # assumes ru_task is an orderreddict
@@ -323,26 +315,6 @@ parser.add_argument(
         "default to '_'"
     ),
 )
-parser.add_argument(
-    "--subrole-prefix",
-    type=str,
-    default=os.environ.get("COLLECTION_SUBROLE_PREFIX", "__"),
-    help=(
-        "If sub-role name does not start with '_', "
-        "change the name to start with the specified value; default to '__'"
-    ),
-)
-parser.add_argument(
-    "--no-readme-link",
-    type=str,
-    nargs="+",
-    default=os.environ.get("COLLECTION_NO_README_LINK", "rsyslog"),
-    help=(
-        "If sub-role name is in the list value, "
-        "the sub-role name will not be listed in the main README; "
-        "default to 'rsyslog'"
-    ),
-)
 args, unknown = parser.parse_known_args()
 
 role = args.role
@@ -356,7 +328,6 @@ collection = args.collection
 prefix = namespace + "." + collection + "."
 top_dest_path = args.dest_path.resolve()
 replace_dot = args.replace_dot
-subrole_prefix = args.subrole_prefix
 
 dest_path = Path.joinpath(
     top_dest_path, "ansible_collections/" + namespace + "/" + collection
@@ -521,11 +492,64 @@ add_to_tests_defaults(namespace, collection, role)
 # ==============================================================================
 
 
+def update_readme(src_path, filename, rolename, comment, issubrole=False):
+    if filename.startswith("README"):
+        if filename == "README.md":
+            title = rolename
+        elif filename.startswith("README-"):
+            m = re.match(r"(README-)(.*)([.]md)", filename)
+            title = rolename + "-" + m.group(2)
+        main_doc = dest_path / "README.md"
+        if not main_doc.exists():
+            s = textwrap.dedent(
+                """\
+                # {0} {1} collections
+
+                {2}
+                <!--ts-->
+                  * [{3}](roles/{4})
+                <!--te-->
+                """
+            ).format(namespace, collection, comment, title, rolename + "/" + filename)
+            with open(main_doc, "w") as f:
+                f.write(s)
+        else:
+            with open(main_doc) as f:
+                s = f.read()
+            if comment not in s:
+                text = (
+                    s
+                    + textwrap.dedent(
+                        """\
+
+                    {2}
+                    <!--ts-->
+                      * [{3}](roles/{4})
+                    <!--te-->
+                    """
+                    ).format(
+                        namespace, collection, comment, title, rolename + "/" + filename
+                    )
+                )
+            else:
+                find = (
+                    r"({0}\n<!--ts-->\n)(( |\*|\w|\[|\]|\(|\)|\.|/|-|\n|\r)+)".format(
+                        comment
+                    )
+                )
+                replace = r"\1\2  * [{0}](roles/{1})\n".format(
+                    title, rolename + "/" + filename
+                )
+                text = re.sub(find, replace, s, flags=re.M)
+            with open(main_doc, "w") as f:
+                f.write(text)
+
+
 # Copy docs, design_docs, and examples to
 # DEST_PATH/ansible_collections/NAMESPACE/COLLECTION/docs/ROLE.
 # Copy README.md to DEST_PATH/ansible_collections/NAMESPACE/COLLECTION/roles/ROLE.
 # Generate a top level README.md which contains links to roles/ROLE/README.md.
-def process_readme(src_path, filename, rolename, original=None):
+def process_readme(src_path, filename, rolename, original=None, issubrole=False):
     """
     Copy src_path/filename to dest_path/docs/rolename.
     filename could be README.md, README-something.md, or something.md.
@@ -544,39 +568,14 @@ def process_readme(src_path, filename, rolename, original=None):
     )
     if original:
         file_replace(dest, original, prefix + rolename, file_patterns)
-    if rolename not in no_readme_link and filename.startswith("README"):
-        if filename == "README.md":
-            title = rolename
-        elif filename.startswith("README-"):
-            m = re.match(r"(README-)(.*)([.]md)", filename)
-            title = rolename + "-" + m.group(2)
-        main_doc = dest_path / "README.md"
-        if not main_doc.exists():
-            s = textwrap.dedent(
-                """\
-                # {0} {1} collections
-
-                ## Supported Linux System Roles
-                <!--ts-->
-                  * [{2}](roles/{3})
-                <!--te-->
-                """
-            ).format(namespace, collection, title, rolename + "/" + filename)
-            with open(main_doc, "w") as f:
-                f.write(s)
-        else:
-            with open(main_doc) as f:
-                s = f.read()
-            replace = "  * [{0}](roles/{1})\n<!--te-->".format(
-                title, rolename + "/" + filename
-            )
-            s = re.sub("<!--te-->", replace, s)
-            with open(main_doc, "w") as f:
-                f.write(s)
+    if issubrole:
+        comment = "## Private Roles"
+    else:
+        comment = "## Supported Linux System Roles"
+    update_readme(src_path, filename, rolename, comment, issubrole)
 
 
 dest = dest_path / "docs" / role
-no_readme_link = []
 for doc in DOCS:
     src = src_path / doc
     if src.is_dir():
@@ -890,14 +889,7 @@ for extra in extras:
         if extra.name == "roles":
             for sr in extra.iterdir():
                 # If a role name contains '.', replace it with replace_dot
-                # convert nested subroles to prefix name with subrole_prefix.
-                if sr.name.startswith("_"):
-                    dr = sr.name.replace(".", replace_dot)
-                else:
-                    dr = subrole_prefix + sr.name.replace(".", replace_dot)
-                for no_readme in args.no_readme_link:
-                    if no_readme == sr.name:
-                        no_readme_link.append(dr)
+                dr = sr.name.replace(".", replace_dot)
                 copy_tree_with_replace(sr, dest_path, prefix, dr, ROLE_DIRS)
                 # copy tests dir to dest_path/"tests"
                 copy_tree_with_replace(
@@ -908,7 +900,9 @@ for extra in extras:
                 # copy README.md to dest_path/roles/sr.name
                 readme = sr / "README.md"
                 if readme.is_file():
-                    process_readme(sr, "README.md", dr, original=sr.name)
+                    process_readme(
+                        sr, "README.md", dr, original=sr.name, issubrole=True
+                    )
                 if sr.name != dr:
                     # replace "sr.name" with "dr" in role_dir
                     dirs = ["roles", "docs", "tests"]

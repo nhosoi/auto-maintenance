@@ -26,7 +26,7 @@ do
         git pull
     fi
     cd "$CWD" || exit
-    python lsr_role2collection.py --role "$role" --no-readme-link rsyslog performancecopilot.pcp
+    python lsr_role2collection.py --role "$role"
 done
 role="template"
 if [ ! -d "$COLLECTION_SRC_PATH/$role" ]; then
