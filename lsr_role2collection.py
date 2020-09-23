@@ -114,9 +114,6 @@ DO_NOT_COPY = (
 # Do not add -ROLENAME to the copied extra file.
 EXTRA_NO_ROLENAME = ()
 
-# Do not add a link in this tuple to the main README.md.
-NO_README_LINK = ("rsyslog",)
-
 ALL_DIRS = ROLE_DIRS + PLUGINS + TESTS + DOCS + TOX + DO_NOT_COPY
 
 IMPORT_RE = re.compile(br"(\bimport) (ansible\.module_utils\.)(\S+)(.*)$", flags=re.M)
@@ -333,6 +330,17 @@ parser.add_argument(
     help=(
         "If sub-role name does not start with '_', "
         "change the name to start with the specified value; default to '__'"
+    ),
+)
+parser.add_argument(
+    "--no-readme-link",
+    type=str,
+    nargs="+",
+    default=os.environ.get("COLLECTION_NO_README_LINK", "rsyslog"),
+    help=(
+        "If sub-role name is in the list value, "
+        "the sub-role name will not be listed in the main README; "
+        "default to 'rsyslog'"
     ),
 )
 args, unknown = parser.parse_known_args()
@@ -887,7 +895,7 @@ for extra in extras:
                     dr = sr.name.replace(".", replace_dot)
                 else:
                     dr = subrole_prefix + sr.name.replace(".", replace_dot)
-                for no_readme in NO_README_LINK:
+                for no_readme in args.no_readme_link:
                     if no_readme == sr.name:
                         no_readme_link.append(dr)
                 copy_tree_with_replace(sr, dest_path, prefix, dr, ROLE_DIRS)
