@@ -123,7 +123,7 @@ class LSRFileTransformerBase(object):
             self.footer = ""
         self.ruamel_yaml.default_flow_style = False
         self.ruamel_yaml.preserve_quotes = True
-        self.ruamel_yaml.width = None
+        self.ruamel_yaml.width = 1024
         self.ruamel_data = self.ruamel_yaml.load(buf)
         self.ruamel_yaml.indent(mapping=2, sequence=4, offset=2)
         self.outputfile = None
