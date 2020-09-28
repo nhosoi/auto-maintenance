@@ -157,7 +157,7 @@ class LSRFileTransformer(LSRFileTransformerBase):
             # assumes ru_task is an orderreddict
             idx = tuple(ru_task).index(module_name)
             val = ru_task.pop(module_name)
-            ru_task.insert(idx, prefix + module_name, val)
+            ru_task.insert(idx, prefix + self.rolename + "." +  module_name, val)
 
     def other_cb(self, a_item, ru_item):
         """do something with the other non-task information in an item
@@ -619,10 +619,10 @@ cleanup_symlinks(dest, role)
 
 # Copy library, module_utils, plugins
 # Library and plugins are copied to dest_path/plugins
-# If plugin is in SUBDIR (currently, just module_utils),
-#   module_utils/*.py are to dest_path/plugins/module_utils/ROLE/*.py
-#   module_utils/subdir/*.py are to dest_path/plugins/module_utils/subdir/*.py
-SUBDIR = ("module_utils",)
+# If plugin is in SUBDIR (currently, modules and module_utils),
+#   {library,module_utils}/*.py are to dest_path/plugins/{modules,module_utils}/ROLE/*.py
+#   {library,module_utils}/subdir/*.py are to dest_path/plugins/{modules,module_utils}/subdir/*.py
+SUBDIR = ("library","module_utils",)
 for plugin in PLUGINS:
     src = src_path / plugin
     plugin_name = dir_to_plugin(plugin)
