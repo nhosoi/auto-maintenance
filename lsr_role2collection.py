@@ -969,12 +969,12 @@ def role2collection():
     src_owner = args.src_owner
     if not src_owner:
         src_owner = os.path.basename(src_path)
-    _meta_path = src_path / "meta/main.yml"
-    if not _meta_path.exists():
+    _tasks_main = src_path / "tasks/main.yml"
+    if not _tasks_main.exists():
         src_path = src_path / role
-        _meta_path = src_path / "meta/main.yml"
+        _tasks_main = src_path / "tasks/main.yml"
 
-    if not _meta_path.exists():
+    if not _tasks_main.exists():
         logging.error(
             f"Neither {src_path} nor {src_path.parent} is a role top directory."
         )
@@ -1285,7 +1285,7 @@ def role2collection():
     # suggest to run ansible-playbook with ANSIBLE_COLLECTIONS_PATHS env var.
     if current_dest not in default_collections_paths_list:
         ansible_collections_paths = current_dest + ":" + default_collections_paths
-        logging.info(
+        print(
             f"Run ansible-playbook with environment variable ANSIBLE_COLLECTIONS_PATHS={ansible_collections_paths}"
         )
 
