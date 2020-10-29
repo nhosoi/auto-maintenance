@@ -390,6 +390,8 @@ FROM_RE = re.compile(
 
 if os.environ.get("LSR_DEBUG") == "true":
     logging.getLogger().setLevel(logging.DEBUG)
+elif os.environ.get("LSR_INFO") == "true":
+    logging.getLogger().setLevel(logging.INFO)
 else:
     logging.getLogger().setLevel(logging.ERROR)
 
@@ -580,7 +582,7 @@ def copy_tree_with_replace(
                 dest = dest_path / "roles" / role / dirname
             else:
                 dest = dest_path / dirname / role
-            print(f"Copying role {src} to {dest}")
+            logging.info(f"Copying role {src} to {dest}")
             if ignoreme:
                 lsr_copytree(
                     src,
@@ -935,7 +937,7 @@ def role2collection():
     role = args.role
     if not role:
         parser.print_help()
-        print("Message: role is not specified.")
+        logging.error("Message: role is not specified.")
         os._exit(errno.EINVAL)
 
     namespace = args.namespace
@@ -963,13 +965,19 @@ def role2collection():
     module_utils_dir = plugin_dir / "module_utils"
     docs_dir = dest_path / "docs"
 
-    _src_path = args.src_path.resolve()
+    src_path = args.src_path.resolve()
     src_owner = args.src_owner
     if not src_owner:
-        src_owner = os.path.basename(_src_path)
-    src_path = Path(_src_path) / role
-    if not src_path.exists():
-        print(f"Error: {src_path} does not exists.")
+        src_owner = os.path.basename(src_path)
+    _meta_path = src_path / "meta/main.yml"
+    if not _meta_path.exists():
+        src_path = src_path / role
+        _meta_path = src_path / "meta/main.yml"
+
+    if not _meta_path.exists():
+        logging.error(
+            f"Neither {src_path} nor {src_path.parent} is a role top directory."
+        )
         sys.exit(errno.ENOENT)
     _extras = set(os.listdir(src_path)).difference(ALL_DIRS)
     try:
@@ -1086,7 +1094,7 @@ def role2collection():
         src = src_path / filename
         dest = roles_dir / rolename / filename
         # copy
-        print(f"Copying doc {filename} to {dest}")
+        logging.info(f"Copying doc {filename} to {dest}")
         copy2(src, dest, follow_symlinks=False)
         dest = roles_dir / rolename
         file_patterns = ["*.md"]
@@ -1103,7 +1111,7 @@ def role2collection():
     for doc in DOCS:
         src = src_path / doc
         if src.is_dir():
-            print(f"Copying docs {src} to {dest}")
+            logging.info(f"Copying docs {src} to {dest}")
             lsr_copytree(
                 src,
                 dest,
@@ -1145,17 +1153,17 @@ def role2collection():
                 if sr.is_dir():
                     # If src/sr is a directory, copy it to the dest
                     dest = plugin_dir / plugin_name / sr.name
-                    print(f"Copying plugin {sr} to {dest}")
+                    logging.info(f"Copying plugin {sr} to {dest}")
                     lsr_copytree(sr, dest)
                 else:
                     # Otherwise, copy it to the plugins/plugin_name/ROLE
                     dest = plugin_dir / plugin_name / role
                     dest.mkdir(parents=True, exist_ok=True)
-                    print(f"Copying plugin {sr} to {dest}")
+                    logging.info(f"Copying plugin {sr} to {dest}")
                     copy2(sr, dest, follow_symlinks=False)
         else:
             dest = plugin_dir / plugin_name
-            print(f"Copying plugin {src} to {dest}")
+            logging.info(f"Copying plugin {src} to {dest}")
             lsr_copytree(src, dest)
 
     # Update the python codes which import modules in plugins/{modules,modules_dir}.
@@ -1179,7 +1187,7 @@ def role2collection():
                         new_text = pattern.sub(rewrite[-1], new_text)
 
                     if text != new_text:
-                        print("Rewriting imports for {}".format(full_path))
+                        logging.info("Rewriting imports for {}".format(full_path))
                         full_path.write_bytes(new_text)
                         additional_rewrites[:] = []
 
@@ -1243,7 +1251,7 @@ def role2collection():
             # Other extra directories are copied to the collection dir as they are.
             else:
                 dest = dest_path / extra.name
-                print(f"Copying extra {extra} to {dest}")
+                logging.info(f"Copying extra {extra} to {dest}")
                 copytree(extra, dest)
         # Other extra files.
         else:
@@ -1258,7 +1266,7 @@ def role2collection():
                 # If the extra file 'filename' has no extension, it is copied to the collection dir as
                 # 'filename-ROLE'. If the extra file is 'filename.ext', it is copied to 'filename-ROLE.ext'.
                 dest = dest_path / add_rolename(extra.name, role)
-            print(f"Copying extra {extra} to {dest}")
+            logging.info(f"Copying extra {extra} to {dest}")
             copy2(extra, dest, follow_symlinks=False)
 
     dest = dest_path / "playbooks" / role
@@ -1277,7 +1285,7 @@ def role2collection():
     # suggest to run ansible-playbook with ANSIBLE_COLLECTIONS_PATHS env var.
     if current_dest not in default_collections_paths_list:
         ansible_collections_paths = current_dest + ":" + default_collections_paths
-        print(
+        logging.info(
             f"Run ansible-playbook with environment variable ANSIBLE_COLLECTIONS_PATHS={ansible_collections_paths}"
         )
 
